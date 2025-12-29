@@ -110,3 +110,17 @@ get_join_data_with_pci <- function(df, pci_data) {
 df.lesion.all <- get_join_data_with_pci(get_lesion_level_data(), get_db_pci_data())
 
 df.cag.all <- get_db_cag_data()
+
+################################################################################
+# Study flow diagram 작성용
+
+all_pcis <- get_db_pci_data() # 32,243
+df.cag.all
+
+count_unique_id(all_pcis$pt_id) # 16,190
+
+count_unique_id(df.lesion.all$pt_id) # 9,586
+
+sum(df.pts$BP == 0) # DP
+sum(df.pts$BP == 1) # BP
+
