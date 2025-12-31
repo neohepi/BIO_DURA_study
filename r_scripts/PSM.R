@@ -67,9 +67,55 @@ check_balance <- function(psm_result, vars_to_check, cat_vars) {
   m.out <- psm_result$model
   matched_data <- psm_result$matched_data
   
-  # 1. Love Plot 출력
-  print(love.plot(m.out, threshold = 0.1, 
-                  title = "Covariate Balance (Love Plot)"))
+  library(cobalt)
+  
+  # 1. 변수명 매핑 리스트 생성 (순서는 상관없음)
+  new_labels <- c(
+    "distance" = "Propensity Score",
+    "age" = "Age (years)",
+    "male" = "Male Sex",
+    "BMI" = "BMI",
+    "smoking" = "Current Smoking",
+    "HTN" = "HTN",
+    "DM" = "DM",
+    "CKD" = "CKD",
+    "DL" = "Dyslipidemia",
+    "LVEF" = "LVEF (%)",
+    "is_ACS" = "ACS",
+    "prior_PCI" = "Previous PCI",
+    "prior_MI" = "Previous MI",
+    "prior_stroke" = "Previous Stroke",
+    
+    # 범주형 변수가 원-핫 인코딩된 경우 구체적인 이름 지정 필요
+    "num_CAOD_1" = "1-Vessel Disease",
+    "num_CAOD_2" = "2-Vessel Disease",
+    "num_CAOD_3" = "3-Vessel Disease",
+    
+    "is_LM" = "Left Main Disease",
+    "is_bifurcation" = "Bifurcation Lesion",
+    "is_complex_lesion" = "Complex Lesion",
+    "is_CTO" = "CTO",
+    "is_ISR" = "ISR lesion",
+    
+    "era_2010-2013" = "Study Period: 2010-2013",
+    "era_2014-2016" = "Study Period: 2014-2016",
+    "era_2017-2021" = "Study Period: 2017-2021"
+  )
+  
+  # 2. love.plot 그리기
+  print(love.plot(
+    x = psm_result$model, # MatchIt 결과 객체 등
+    stat = "mean.diffs",
+    abs = TRUE,
+    threshold = 0.1,
+    
+    # ★ 여기서 이름 변경 적용
+    var.names = new_labels, 
+    
+    # (선택) Propensity Score(distance)를 그래프에서 빼고 싶다면
+    # drop.distance = TRUE 
+  ))
+  
   
   # 2. Matched Table 1 생성
   table1 <- CreateTableOne(vars = vars_to_check, 
@@ -90,15 +136,21 @@ check_balance <- function(psm_result, vars_to_check, cat_vars) {
 # 원본 데이터 로드
 df.toPSM <- df.pts # patient-level data
 
+df.toPSM <- add_procedural_data(df.toPSM, df.lesion.all)
+
 # 매칭에 사용할 변수 (NA 있으면 안됨)
 match_vars_list <- c("age", "male", "BMI", "smoking",
-                     "HTN", "DM", "CKD", 
-                     "LVEF", "is_ACS", "prior_PCI", "prior_CABG", "prior_MI", 
-                     "prior_stroke",
-                     "num_CAOD", "era")
+                     "HTN", "DM", "CKD", "DL",
+                     "LVEF", "is_ACS", "prior_PCI", "prior_MI", "prior_stroke", 
+                     #"prior_CABG", 
+                     "num_CAOD", "is_LM", "is_bifurcation", "is_complex_lesion", "is_CTO", "is_ISR", 
+                     "era")
 
 # 결과 분석에 필요한 변수 (NA 있어도 됨)
-keep_vars_list <- c("pt_id", "procedure_year", "CAG_date", "fu_days",
+keep_vars_list <- c("pt_id", "procedure_year", "CAG_date", "fu_days", "ACS_type",
+                    "TC", "LDL", "HDL", "TG", "prior_CABG",
+                    "is_LAD", "is_LCX", "is_RCA", "is_multivessel", 
+                    "num_stents", "total_stent_length", "avg_stent_diameter", 
                     "TVR", "TVR_date",
                     "TLR", "TLR_date", 
                     "cardiac_death", "cardiac_death_date", 
@@ -108,10 +160,12 @@ keep_vars_list <- c("pt_id", "procedure_year", "CAG_date", "fu_days",
 
 # Table 1에 표시할 변수 (보통 match_vars와 비슷하지만 더 많을 수도 있음)
 table1_vars <- match_vars_list
-table1_cat_vars <- c("male", "smoking", "HTN", "DM", "CKD", 
+table1_cat_vars <- c("male", "smoking", "HTN", "DM", "CKD", "DL", 
                      "is_ACS", 
-                     "prior_PCI", "prior_CABG", "prior_MI", "prior_stroke",
-                     "num_CAOD", "era")
+                     "prior_PCI", "prior_MI", "prior_stroke",
+                     "num_CAOD", 
+                     "is_bifurcation", "is_complex_lesion", "is_CTO", "is_ISR",
+                     "era")
 
 # ==============================================================================
 # 2. 실행 (Execution)

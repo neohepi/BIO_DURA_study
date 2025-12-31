@@ -162,3 +162,27 @@ add_capped_variables <- function(data,
   
   return(data)
 }
+
+
+add_external_column <- function(target_data,   # 원본 데이터 (matched_data)
+                                source_data,   # 가져올 데이터 (result_composite$processed_data)
+                                source_col,    # 가져올 컬럼명 ("analyzed_time")
+                                new_col_name) {# 새로 붙일 이름 ("time_to_composite")
+  
+  # 1. 행 개수 일치 여부 확인 (안전장치)
+  if(nrow(target_data) != nrow(source_data)) {
+    stop("Error: 두 데이터프레임의 행(Row) 개수가 달라서 합칠 수 없습니다.")
+  }
+  
+  # 2. 컬럼 추출 및 이름 변경
+  # !!sym()을 사용하여 문자열로 된 변수명을 실제 변수처럼 인식시킵니다.
+  col_extracted <- source_data %>%
+    select(all_of(source_col)) %>%
+    rename(!!new_col_name := !!sym(source_col))
+  
+  # 3. 데이터 합치기 (cbind 대신 안전한 bind_cols 추천)
+  # cbind(target_data, col_extracted) 도 가능하지만, dplyr 파이프라인엔 bind_cols가 좋습니다.
+  combined_data <- bind_cols(target_data, col_extracted)
+  
+  return(combined_data)
+}

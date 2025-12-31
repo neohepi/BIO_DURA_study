@@ -187,10 +187,13 @@ print(fp_mi)
 
 library(ggplot2)
 library(patchwork)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
 
 create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
   
-  # Prepare data
+  # 1. 데이터 준비 (row_number()를 여기서 미리 계산)
   plot_data <- data %>%
     mutate(
       label = if_else(Category == "All Patients", 
@@ -207,7 +210,7 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
         Subgroup == "Clinical Presentation" ~ "Presentation",
         TRUE ~ "Other"
       ),
-      # Add significance markers
+      # 유의성 마커
       sig_marker = case_when(
         P_value < 0.01 ~ "**",
         P_value < 0.05 ~ "*",
@@ -215,18 +218,21 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
         TRUE ~ ""
       )
     ) %>%
-    arrange(desc(row_number()))
+    # 순서를 위한 정렬 및 ID 생성 (가장 중요한 수정 부분)
+    arrange(desc(row_number())) %>% 
+    mutate(plot_order = row_number()) 
   
-  # Create plot
-  p <- ggplot(plot_data, aes(y = reorder(label, row_number()), x = HR)) +
+  # 2. 플롯 생성
+  p <- ggplot(plot_data, aes(y = reorder(label, plot_order), x = HR)) +
     
     # Reference line at HR=1
     geom_vline(xintercept = 1, linetype = "dashed", 
-               color = "gray50", size = 0.8) +
+               color = "gray50", linewidth = 0.8) + # size -> linewidth 수정
     
     # Confidence intervals
-    geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper, color = color_group),
-                   height = 0.3, size = 1) +
+    # geom_errorbarh 대신 geom_errorbar 사용 (y축 매핑 시 자동 인식)
+    geom_errorbar(aes(xmin = CI_lower, xmax = CI_upper, color = color_group),
+                  width = 0.3, linewidth = 1) + # height -> width, size -> linewidth
     
     # Point estimates
     geom_point(aes(color = color_group, size = color_group, 
@@ -238,7 +244,8 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
                  "Age" = "#377EB8", 
                  "Sex" = "#4DAF4A",
                  "Diabetes" = "#984EA3", 
-                 "Presentation" = "#FF7F00")
+                 "Presentation" = "#FF7F00",
+                 "Other" = "gray50")
     ) +
     
     scale_size_manual(
@@ -246,15 +253,17 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
                  "Age" = 3, 
                  "Sex" = 3,
                  "Diabetes" = 3, 
-                 "Presentation" = 3)
+                 "Presentation" = 3,
+                 "Other" = 3)
     ) +
     
     scale_shape_manual(
-      values = c("Overall" = 18,  # Diamond
-                 "Age" = 16,       # Circle
-                 "Sex" = 17,       # Triangle
-                 "Diabetes" = 15,  # Square
-                 "Presentation" = 16)
+      values = c("Overall" = 18, # Diamond
+                 "Age" = 16,     # Circle
+                 "Sex" = 17,     # Triangle
+                 "Diabetes" = 15, # Square
+                 "Presentation" = 16,
+                 "Other" = 16)
     ) +
     
     # X-axis (log scale)
@@ -268,7 +277,7 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
     # Labels
     labs(
       title = title,
-      x = "Hazard Ratio (95% CI)\nFavors BP-DES     Favors DP-DES",
+      x = "Hazard Ratio (95% CI)\nFavors BP-DES      Favors DP-DES",
       y = NULL
     ) +
     
@@ -281,13 +290,13 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
       axis.title.x = element_text(size = 11, face = "bold"),
       axis.line.y = element_blank(),
       axis.ticks.y = element_blank(),
-      panel.grid.major.x = element_line(color = "gray90", size = 0.3),
+      panel.grid.major.x = element_line(color = "gray90", linewidth = 0.3), # size -> linewidth
       plot.margin = margin(10, 20, 10, 10)
     ) +
     
     # Add HR values as text
     geom_text(aes(label = sprintf("%.2f", HR)), 
-              hjust = -0.3, size = 3, fontface = "bold") +
+              vjust = -1.5, size = 3, fontface = "bold") + # hjust 대신 vjust 조정이 나을 수 있음 (취향 차이)
     
     # Add significance markers
     geom_text(aes(label = sig_marker, x = CI_upper), 
@@ -295,6 +304,8 @@ create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
   
   return(p)
 }
+
+# --- 실행 테스트 ---
 
 # Create ggplot versions
 p_tlf <- create_ggplot_forest(
@@ -307,12 +318,6 @@ p_mi <- create_ggplot_forest(
   "Myocardial Infarction at 1 Year"
 )
 
-# Save individual plots
-ggsave("Figure_Forest_TLF_ggplot.pdf", p_tlf, 
-       width = 8, height = 7, dpi = 300)
-ggsave("Figure_Forest_MI_ggplot.pdf", p_mi, 
-       width = 8, height = 7, dpi = 300)
-
 # Combined plot
 combined_forest <- (p_tlf | p_mi) +
   plot_annotation(
@@ -320,14 +325,13 @@ combined_forest <- (p_tlf | p_mi) +
     theme = theme(plot.title = element_text(size = 14, face = "bold"))
   )
 
+# Save
 ggsave("Figure_Forest_Combined.pdf", combined_forest, 
        width = 14, height = 7, dpi = 300)
 
-ggsave("Figure_Forest_Combined.tiff", combined_forest, 
-       width = 14, height = 7, dpi = 300, compression = "lzw")
-
 print(p_tlf)
 print(p_mi)
+
 
 
 ################################################################################

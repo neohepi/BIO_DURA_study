@@ -74,12 +74,14 @@ add_procedural_data <- function(data, df_lesion) {
 }
 
 # 2. Baseline Table 생성 함수 정의
-get_baseline_table <- function(data, group_var = NULL) {
+get_baseline_table <- function(data, group_var = NULL, need_to_add_proc_data = T) {
   # 추가 column 생성
   data <- data %>%
     mutate(num_CAOD = as.numeric(as.character(num_CAOD)))
   
-  data <- add_procedural_data(data, df.lesion.all)
+  if (need_to_add_proc_data) {
+    data <- add_procedural_data(data, df.lesion.all)
+  }
   
   data <- data %>%
     mutate(LVEFlt40 = factor(ifelse(LVEF < 40, 1, 0)),
@@ -243,10 +245,9 @@ get_baseline_table <- function(data, group_var = NULL) {
 }
 
 table1 <- get_baseline_table(df.pts, group_var = "BP")
-
-# 결과 출력
 table1
 
-df.pts %>% left_join(df.lesion.all, by=c("pt_id", "cath_no"))
+table2 <- get_baseline_table(matched_data, group_var = "BP", need_to_add_proc_data = F)
+table2
 
-df.lesion.all$CTO
+

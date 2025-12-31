@@ -1,0 +1,6 @@
+"Endpoint","P_interaction","Significant"
+"Composite",0.2815,"No"
+"TLR",0.5097,"No"
+"MI",0.5354,"No"
+"Death",0.2614,"No"
+"Cardiac Death",0.0197,"Yes"

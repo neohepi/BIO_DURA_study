@@ -156,6 +156,16 @@ result_composite <- analyze_landmark_survival(
 print(result_composite$cox_table)
 print(result_composite$plot)
 
+# ESC grid figure를 위한 code
+outcome <- list()
+outcome$composite_plot <- result_composite$plot
+
+matched_data <- add_external_column(
+  target_data = matched_data,
+  source_data = result_composite$processed_data,
+  source_col = "analyzed_time",       # 원래 이름
+  new_col_name = "time_to_composite"  # 바꿀 이름 (함수 인자로 지정)
+)
 
 ################################################################################
 # Cardiac death
@@ -176,6 +186,8 @@ result_cardiac_death <- analyze_landmark_survival(
 print(result_cardiac_death$cox_table)
 print(result_cardiac_death$plot)
 
+outcome$cardiac_death_plot <- result_cardiac_death$plot
+
 ################################################################################
 # TLR
 ################################################################################
@@ -195,6 +207,8 @@ result_TLR <- analyze_landmark_survival(
 print(result_TLR$cox_table)
 print(result_TLR$plot)
 
+outcome$TLR_plot <- result_TLR$plot
+
 ################################################################################
 # MI
 ################################################################################
@@ -210,13 +224,40 @@ result_next_MI <- analyze_landmark_survival(
   fu_days_var = "fu_days",
   cap_years = 5,
   landmark_days = 365,
-  yrange = c(0, 0.05),
+  yrange = c(0, 0.08),
   plot_title = "MI"
 )
 
 print(result_next_MI$cox_table)
 print(result_next_MI$plot)
 
+matched_data <- add_external_column(
+  target_data = matched_data,
+  source_data = result_composite$processed_data,
+  source_col = "analyzed_time",       # 원래 이름
+  new_col_name = "time_to_MI"  # 바꿀 이름 (함수 인자로 지정)
+)
+
+outcome$MI_plot <- result_next_MI$plot
+
+################################ Early
+install.packages("survminer")
+library(survminer)
+fit <- survfit(
+  Surv(time_to_MI, next_MI) ~ BP,
+  data = matched_data
+)
+matched_data <- matched_data %>% rename(time_to_composite=time_to_composite...58)
+
+
+ggsurvplot(
+  fit,
+  data = matched_data,
+  fun = "event",  # Cumulative incidence
+  xlim = c(0, 365),  # 첫 1년만
+  break.time.by = 30,
+  risk.table = TRUE
+)
 
 ################################################################################
 # Any death
@@ -236,6 +277,15 @@ result_any_death <- analyze_landmark_survival(
 
 print(result_any_death$cox_table)
 print(result_any_death$plot)
+
+matched_data <- add_external_column(
+  target_data = matched_data,
+  source_data = result_composite$processed_data,
+  source_col = "analyzed_time",       # 원래 이름
+  new_col_name = "time_to_death"  # 바꿀 이름 (함수 인자로 지정)
+)
+
+
 
 ################################################################################
 # TVR
