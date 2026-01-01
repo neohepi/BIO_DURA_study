@@ -151,12 +151,15 @@ keep_vars_list <- c("pt_id", "procedure_year", "CAG_date", "fu_days", "ACS_type"
                     "TC", "LDL", "HDL", "TG", "prior_CABG",
                     "is_LAD", "is_LCX", "is_RCA", "is_multivessel", 
                     "num_stents", "total_stent_length", "avg_stent_diameter", 
+                    "last_fu_date",
                     "TVR", "TVR_date",
                     "TLR", "TLR_date", 
+                    "TVMI", "TVMI_date",
                     "cardiac_death", "cardiac_death_date", 
                     "any_death", "death_date", 
                     "next_MI", "next_MI_date",
-                    "composite_event", "composite_date")
+                    "composite_event", "composite_date",
+                    "ST_outcome", "ST_date")
 
 # Table 1에 표시할 변수 (보통 match_vars와 비슷하지만 더 많을 수도 있음)
 table1_vars <- match_vars_list

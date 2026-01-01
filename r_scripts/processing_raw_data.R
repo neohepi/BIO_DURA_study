@@ -67,7 +67,7 @@ get_db_pci_data <- function(pci_data_file="excel_files/outcome_new_251220.xlsx")
   
   # column selection and renaming
   df <- df %>%
-    select(pt_id, cath_no, lesion_anatomy, ISR_lesion, is_ACS, ACS_type, 
+    select(pt_id, cath_no, lesion_anatomy, ISR_lesion, is_ACS, ACS_type, thrombus,
            # outcomes
            ISR, ST, TLR, TLR_date, TVR, TVR_date) %>%
     rename(ISR_outcome=ISR, ST_outcome=ST)
@@ -116,6 +116,7 @@ df.cag.all <- get_db_cag_data()
 
 all_pcis <- get_db_pci_data() # 32,243
 df.cag.all
+all_pcis <- all_pcis %>% left_join(df.cag.all %>% select(cath_no, CAG_date), by="cath_no")
 
 count_unique_id(all_pcis$pt_id) # 16,190
 
@@ -123,4 +124,5 @@ count_unique_id(df.lesion.all$pt_id) # 9,586
 
 sum(df.pts$BP == 0) # DP
 sum(df.pts$BP == 1) # BP
+
 

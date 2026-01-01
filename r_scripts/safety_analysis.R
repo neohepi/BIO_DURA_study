@@ -109,3 +109,272 @@ cif %>%
   ) +
   add_pvalue(caption = "Gray's Test") +  # P-value 자동 추가 (중요!)
   scale_ggsurvfit()                      # 깔끔한 테마 적용
+
+################################################################################
+# ST analysis
+# Stent Thrombosis Analysis with Landmark
+library(dplyr)
+library(lubridate)
+
+library(dplyr)
+library(lubridate)
+
+create_ST_variables_corrected <- function(data,
+                                          index_date_col = "CAG_date",
+                                          st_date_col = "ST_date", 
+                                          last_fu_col = "last_FU_date",
+                                          st_indicator_col = "ST_outcome", 
+                                          max_followup_days = 1825) {  # 5 years
+  
+  result_data <- data %>%
+    mutate(
+      # 날짜 형식 변환
+      index_date = as.Date(.data[[index_date_col]]),
+      st_date_event = as.Date(.data[[st_date_col]]), # st_date 이름 충돌 방지
+      last_fu_date = as.Date(.data[[last_fu_col]]),
+      
+      # 1. Raw Time 계산 (제한 없는 실제 일수)
+      raw_days_to_event = case_when(
+        # ST 발생 시: ST 날짜 기준
+        !is.na(.data[[st_indicator_col]]) & .data[[st_indicator_col]] == 1 & !is.na(st_date_event) ~ 
+          as.numeric(st_date_event - index_date),
+        
+        # ST 미발생 시: 마지막 추적일 기준
+        TRUE ~ as.numeric(last_fu_date - index_date)
+      ),
+      
+      # 음수 값 보정 (데이터 오류 방지)
+      raw_days_to_event = pmax(raw_days_to_event, 0, na.rm = TRUE),
+      
+      # 2. Time Truncation (최대 기간으로 자르기)
+      time_to_ST = pmin(raw_days_to_event, max_followup_days),
+      
+      # 3. Outcome Censoring (가장 중요!)
+      # 원래 이벤트가 있었더라도(1), 기간(1825일)을 넘겨서 발생했다면 0으로 변경
+      ST_outcome_censored = case_when(
+        !is.na(.data[[st_indicator_col]]) & .data[[st_indicator_col]] == 1 & raw_days_to_event <= max_followup_days ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # 기존 변수명과의 호환성을 위해 ST_outcome으로 저장 (필요시 변경 가능)
+      ST_outcome = ST_outcome_censored,
+      
+      # 4. ST Timing 재분류 (Outcome이 0이 되면 Timing도 수정 필요)
+      ST_timing = case_when(
+        ST_outcome == 1 & time_to_ST <= 1 ~ "Acute (≤24h)",
+        ST_outcome == 1 & time_to_ST <= 30 ~ "Subacute (1-30d)",
+        ST_outcome == 1 & time_to_ST <= 365 ~ "Late (30d-1y)",
+        ST_outcome == 1 & time_to_ST > 365 ~ "Very Late (>1y)",
+        TRUE ~ "No ST" # Censored 된 경우 포함
+      )
+    )
+  
+  # 요약 출력
+  cat("\n=== ST Variable Creation (Censored at", max_followup_days, "days) ===\n")
+  cat("Total patients:", nrow(result_data), "\n")
+  
+  # Censoring 전후 비교 (데이터 검증용)
+  original_events <- sum(data[[st_indicator_col]], na.rm=TRUE)
+  new_events <- sum(result_data$ST_outcome, na.rm=TRUE)
+  
+  cat("Original ST events:", original_events, "\n")
+  cat("Final ST events (within 5 years):", new_events, "\n")
+  cat("-> Events censored (occurred > 5 years):", original_events - new_events, "\n\n")
+  
+  cat("ST rate (5-year):", round(mean(result_data$ST_outcome, na.rm = TRUE) * 100, 2), "%\n")
+  
+  return(result_data)
+}
+
+# 사용 예시
+matched_data_ST <- create_ST_variables_corrected(
+  data = matched_data,
+  index_date_col = "CAG_date",
+  st_date_col = "ST_date",
+  last_fu_col = "last_fu_date",
+  st_indicator_col = "ST_outcome",
+  max_followup_days = 1825
+)
+
+
+# ============================================================================
+# Most flexible version: Multiple ST definitions
+# ============================================================================
+
+create_comprehensive_ST_variables <- function(data,
+                                              index_date_col = "CAG_date",
+                                              last_fu_col = "last_FU_date",
+                                              definite_ST_col = "definite_ST",
+                                              probable_ST_col = "probable_ST",
+                                              definite_ST_date_col = NULL,
+                                              probable_ST_date_col = NULL,
+                                              max_followup_days = 1825) {
+  
+  result_data <- data %>%
+    mutate(
+      index_date = as.Date(.data[[index_date_col]]),
+      last_fu_date = as.Date(.data[[last_fu_col]])
+    )
+  
+  # Definite ST
+  if (!is.null(definite_ST_date_col) && definite_ST_date_col %in% names(data)) {
+    result_data <- result_data %>%
+      mutate(
+        definite_ST_date = as.Date(.data[[definite_ST_date_col]]),
+        time_to_definite_ST = case_when(
+          !is.na(.data[[definite_ST_col]]) & .data[[definite_ST_col]] == 1 & !is.na(definite_ST_date) ~
+            as.numeric(definite_ST_date - index_date),
+          TRUE ~ as.numeric(last_fu_date - index_date)
+        ),
+        time_to_definite_ST = pmin(pmax(time_to_definite_ST, 0), max_followup_days),
+        definite_ST_outcome = ifelse(!is.na(.data[[definite_ST_col]]) & 
+                                       .data[[definite_ST_col]] == 1, 1, 0)
+      )
+  } else {
+    result_data <- result_data %>%
+      mutate(
+        time_to_definite_ST = as.numeric(last_fu_date - index_date),
+        time_to_definite_ST = pmin(pmax(time_to_definite_ST, 0), max_followup_days),
+        definite_ST_outcome = ifelse(!is.na(.data[[definite_ST_col]]) & 
+                                       .data[[definite_ST_col]] == 1, 1, 0)
+      )
+  }
+  
+  # Definite or Probable ST (composite)
+  result_data <- result_data %>%
+    mutate(
+      # Composite ST outcome
+      ST_composite = case_when(
+        (!is.na(.data[[definite_ST_col]]) & .data[[definite_ST_col]] == 1) |
+          (!is.na(.data[[probable_ST_col]]) & .data[[probable_ST_col]] == 1) ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # Time to composite ST
+      time_to_ST = case_when(
+        ST_composite == 1 & !is.na(definite_ST_date) ~ 
+          as.numeric(definite_ST_date - index_date),
+        ST_composite == 1 ~ as.numeric(last_fu_date - index_date),
+        TRUE ~ as.numeric(last_fu_date - index_date)
+      ),
+      
+      time_to_ST = pmin(pmax(time_to_ST, 0), max_followup_days),
+      ST_outcome = ST_composite
+    )
+  
+  # Summary
+  cat("\n=== Comprehensive ST Analysis ===\n")
+  cat("Total patients:", nrow(result_data), "\n\n")
+  
+  cat("Definite ST:\n")
+  cat("  Events:", sum(result_data$definite_ST_outcome, na.rm = TRUE), "\n")
+  cat("  Rate:", round(mean(result_data$definite_ST_outcome, na.rm = TRUE) * 100, 2), "%\n\n")
+  
+  cat("Definite or Probable ST:\n")
+  cat("  Events:", sum(result_data$ST_outcome, na.rm = TRUE), "\n")
+  cat("  Rate:", round(mean(result_data$ST_outcome, na.rm = TRUE) * 100, 2), "%\n\n")
+  
+  cat("Follow-up duration:\n")
+  cat("  Median:", median(result_data$time_to_ST, na.rm = TRUE), "days\n")
+  cat("  Mean:", round(mean(result_data$time_to_ST, na.rm = TRUE), 1), "days\n")
+  cat("  Max:", max(result_data$time_to_ST, na.rm = TRUE), "days\n\n")
+  
+  return(result_data)
+}
+
+# ST 발생 날짜가 별도로 기록된 경우
+matched_data <- create_ST_variables(
+  data = matched_data,
+  index_date_col = "CAG_date",
+  st_date_col = "ST_date",          # ST 발생일
+  last_fu_col = "last_fu_date",
+  st_indicator_col = "ST_outcome",          # ST 발생 여부 (0/1)
+  max_followup_days = 1825
+)
+
+# 결과 확인
+head(matched_data %>% select(pt_id, CAG_date, ST_date, last_fu_date, 
+                             time_to_ST, ST_outcome, ST_timing))
+
+################################################################################
+library(dplyr)
+library(lubridate)
+
+create_ST_variables_corrected <- function(data,
+                                          index_date_col = "CAG_date",
+                                          st_date_col = "ST_date", 
+                                          last_fu_col = "last_FU_date",
+                                          st_indicator_col = "ST_outcome", 
+                                          max_followup_days = 1825) {  # 5 years
+  
+  result_data <- data %>%
+    mutate(
+      # 날짜 형식 변환
+      index_date = as.Date(.data[[index_date_col]]),
+      st_date_event = as.Date(.data[[st_date_col]]), # st_date 이름 충돌 방지
+      last_fu_date = as.Date(.data[[last_fu_col]]),
+      
+      # 1. Raw Time 계산 (제한 없는 실제 일수)
+      raw_days_to_event = case_when(
+        # ST 발생 시: ST 날짜 기준
+        !is.na(.data[[st_indicator_col]]) & .data[[st_indicator_col]] == 1 & !is.na(st_date_event) ~ 
+          as.numeric(st_date_event - index_date),
+        
+        # ST 미발생 시: 마지막 추적일 기준
+        TRUE ~ as.numeric(last_fu_date - index_date)
+      ),
+      
+      # 음수 값 보정 (데이터 오류 방지)
+      raw_days_to_event = pmax(raw_days_to_event, 0, na.rm = TRUE),
+      
+      # 2. Time Truncation (최대 기간으로 자르기)
+      time_to_ST = pmin(raw_days_to_event, max_followup_days),
+      
+      # 3. Outcome Censoring (가장 중요!)
+      # 원래 이벤트가 있었더라도(1), 기간(1825일)을 넘겨서 발생했다면 0으로 변경
+      ST_outcome_censored = case_when(
+        !is.na(.data[[st_indicator_col]]) & .data[[st_indicator_col]] == 1 & raw_days_to_event <= max_followup_days ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # 기존 변수명과의 호환성을 위해 ST_outcome으로 저장 (필요시 변경 가능)
+      ST_outcome = ST_outcome_censored,
+      
+      # 4. ST Timing 재분류 (Outcome이 0이 되면 Timing도 수정 필요)
+      ST_timing = case_when(
+        ST_outcome == 1 & time_to_ST <= 1 ~ "Acute (≤24h)",
+        ST_outcome == 1 & time_to_ST <= 30 ~ "Subacute (1-30d)",
+        ST_outcome == 1 & time_to_ST <= 365 ~ "Late (30d-1y)",
+        ST_outcome == 1 & time_to_ST > 365 ~ "Very Late (>1y)",
+        TRUE ~ "No ST" # Censored 된 경우 포함
+      )
+    )
+  
+  # 요약 출력
+  cat("\n=== ST Variable Creation (Censored at", max_followup_days, "days) ===\n")
+  cat("Total patients:", nrow(result_data), "\n")
+  
+  # Censoring 전후 비교 (데이터 검증용)
+  original_events <- sum(data[[st_indicator_col]], na.rm=TRUE)
+  new_events <- sum(result_data$ST_outcome, na.rm=TRUE)
+  
+  cat("Original ST events:", original_events, "\n")
+  cat("Final ST events (within 5 years):", new_events, "\n")
+  cat("-> Events censored (occurred > 5 years):", original_events - new_events, "\n\n")
+  
+  cat("ST rate (5-year):", round(mean(result_data$ST_outcome, na.rm = TRUE) * 100, 2), "%\n")
+  
+  return(result_data)
+}
+
+# 사용 예시
+matched_data <- create_ST_variables_corrected(
+  data = matched_data,
+  index_date_col = "CAG_date",
+  st_date_col = "ST_date",
+  last_fu_col = "last_fu_date",
+  st_indicator_col = "ST_outcome",
+  max_followup_days = 1825
+)
+
+

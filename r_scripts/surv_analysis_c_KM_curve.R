@@ -84,23 +84,42 @@ analyze_landmark_survival <- function(data,
   cox_LM_End  <- coxph(Surv(time_capped, status_capped) ~ group, data = data_LM_End)
   
   # Plotting with jskm
-  plot_obj <- jskm(fit_overall, 
-                   data = working_data,
-                   cumhaz = T, table = T, mark = F, 
-                   ystratalabs = c("DP-DES", "BP-DES"), 
-                   ylab = "Cumulative incidence (%)", 
-                   surv.scale = "percent", 
-                   ylims = yrange,
-                   timeby = 365,
-                   size.label.nrisk = 11,
-                   cut.landmark = landmark_days,
-                   showpercent = T,
-                   pval = T,
-                   pval.size = 4,
-                   pval.testname = F,
-                   pval.coord = c(150, yrange[2]*0.9),
-                   main = plot_title
-  )
+  if (landmark_days > 0) {
+    plot_obj <- jskm(fit_overall, 
+                     data = working_data,
+                     cumhaz = T, table = T, mark = F, 
+                     ystratalabs = c("DP-DES", "BP-DES"), 
+                     ylab = "Cumulative incidence (%)", 
+                     surv.scale = "percent", 
+                     ylims = yrange,
+                     timeby = 365,
+                     size.label.nrisk = 11,
+                     cut.landmark = landmark_days,
+                     showpercent = T,
+                     pval = T,
+                     pval.size = 4,
+                     pval.testname = F,
+                     pval.coord = c(150, yrange[2]*0.9),
+                     main = plot_title
+    )
+  } else {
+    plot_obj <- jskm(fit_overall, 
+                     data = working_data,
+                     cumhaz = T, table = T, mark = F, 
+                     ystratalabs = c("DP-DES", "BP-DES"), 
+                     ylab = "Cumulative incidence (%)", 
+                     surv.scale = "percent", 
+                     ylims = yrange,
+                     timeby = 365,
+                     size.label.nrisk = 11,
+                     showpercent = T,
+                     pval = T,
+                     pval.size = 4,
+                     pval.testname = F,
+                     pval.coord = c(150, yrange[2]*0.9),
+                     main = plot_title
+    )
+  }
   
   # [Step 7] 결과 테이블 정리
   extract_cox_res <- function(model, label) {
@@ -150,7 +169,7 @@ result_composite <- analyze_landmark_survival(
   cap_years = 5,
   landmark_days = 365,
   yrange = c(0, 0.10),
-  plot_title = "Primary Composite"
+  plot_title = "TLF"
 )
 
 print(result_composite$cox_table)
@@ -213,23 +232,37 @@ outcome$TLR_plot <- result_TLR$plot
 # MI
 ################################################################################
 # factor 결과값은 제대로 분석이 안됨
-matched_data$next_MI <- as.numeric(as.character(matched_data$next_MI))
+# matched_data$next_MI <- as.numeric(as.character(matched_data$next_MI))
+# 
+# result_next_MI <- analyze_landmark_survival(
+#   data = matched_data,
+#   group_var = "BP",
+#   date_cag_var = "CAG_date",
+#   date_event_var = "next_MI_date",   # <--- 여기만 변경
+#   event_status_var = "next_MI",      # <--- 여기만 변경
+#   fu_days_var = "fu_days",
+#   cap_years = 5,
+#   landmark_days = 365,
+#   yrange = c(0, 0.08),
+#   plot_title = "MI"
+# )
 
-result_next_MI <- analyze_landmark_survival(
+result_TVMI <- analyze_landmark_survival(
   data = matched_data,
   group_var = "BP",
   date_cag_var = "CAG_date",
-  date_event_var = "next_MI_date",   # <--- 여기만 변경
-  event_status_var = "next_MI",      # <--- 여기만 변경
+  date_event_var = "TVMI_date",   # <--- 여기만 변경
+  event_status_var = "TVMI",      # <--- 여기만 변경
   fu_days_var = "fu_days",
   cap_years = 5,
   landmark_days = 365,
-  yrange = c(0, 0.08),
-  plot_title = "MI"
+  yrange = c(0, 0.03),
+  plot_title = "TVMI"
 )
 
-print(result_next_MI$cox_table)
-print(result_next_MI$plot)
+
+print(result_TVMI$cox_table)
+print(result_TVMI$plot)
 
 matched_data <- add_external_column(
   target_data = matched_data,
@@ -238,16 +271,16 @@ matched_data <- add_external_column(
   new_col_name = "time_to_MI"  # 바꿀 이름 (함수 인자로 지정)
 )
 
-outcome$MI_plot <- result_next_MI$plot
+outcome$MI_plot <-result_TVMI$plot
 
 ################################ Early
-install.packages("survminer")
+#install.packages("survminer")
 library(survminer)
 fit <- survfit(
-  Surv(time_to_MI, next_MI) ~ BP,
+  Surv(time_to_MI, TVMI) ~ BP,
   data = matched_data
 )
-matched_data <- matched_data %>% rename(time_to_composite=time_to_composite...58)
+#matched_data <- matched_data %>% rename(time_to_composite=time_to_composite...58)
 
 
 ggsurvplot(
@@ -305,3 +338,26 @@ result_TVR <- analyze_landmark_survival(
 
 print(result_TVR$cox_table)
 print(result_TVR$plot)
+
+
+# ################################################################################
+# # ST
+# ################################################################################
+# result_ST <- analyze_landmark_survival(
+#   data = matched_data,
+#   group_var = "BP",
+#   date_cag_var = "CAG_date",
+#   date_event_var = "ST_date",   # <--- 여기만 변경
+#   event_status_var = "ST_outcome",      # <--- 여기만 변경
+#   fu_days_var = "fu_days",
+#   cap_years = 5,
+#   landmark_days = 365,
+#   yrange = c(0, 0.01),
+#   #  plot_title = "Primary Composite"
+# )
+# 
+# print(result_ST$cox_table)
+# print(result_ST$plot)
+# 
+# matched_data %>% filter(BP == 0 & ST_outcome == 1) %>% count()
+# matched_data %>% filter(BP == 1 & ST_outcome == 1) %>% count()
