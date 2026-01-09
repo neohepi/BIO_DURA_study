@@ -57,14 +57,22 @@ isr_summary <- isr_summary %>%
          prior_stroke, TIA, last_fu_date, fu_days, death_date, cardiac_death, ACC_type, procedure_year, is_ACS,
          is_ISR_lesion, ISR_outcome, ST_outcome, TLR, TLR_date, TVR, TVR_date)
 
-write_xlsx(isr_summary, "ISR_lesion_all.xlsx")
+isr_summary <- as_tibble(calc_ST_after_index_vessel(isr_summary, all_pcis))
+isr_summary <- as_tibble(get_TVMI_events(
+  df_pts = isr_summary, 
+  df_lesions = all_pcis,
+  mi_col = "is_ACS",    # 혹은 "MI"
+  outcome_col = "TVMI",
+  tvmi_date_col = "TVMI_date"
+))
 
+write_xlsx(isr_summary, "ISR_lesion_all.xlsx")
 
 # isr_summary에서 join key를 기준으로 중복을 제거하여 유니크한 '참조표'로 만듭니다.
 # (필요한 Outcome 변수들만 select에 포함시키세요)
-isr_summary_unique <- isr_summary %>%
-  select(pt_id, lesion_anatomy, CAG_date, is_ISR_lesion, TVR, time_TVR) %>%
-  distinct(pt_id, lesion_anatomy, CAG_date, .keep_all = TRUE)
+# isr_summary_unique <- isr_summary %>%
+#   select(pt_id, lesion_anatomy, CAG_date, is_ISR_lesion, TVR, time_TVR) %>%
+#   distinct(pt_id, lesion_anatomy, CAG_date, .keep_all = TRUE)
 
 
 # 이제 join을 수행하면 Warning 없이 1:N 매칭이 됩니다. (하나의 Outcome이 해당 병변의 모든 스텐트 행에 붙음)
