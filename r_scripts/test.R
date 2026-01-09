@@ -1,16 +1,13 @@
-#install.packages("gridExtra", "grid")
-library(gridExtra)
-library(grid)
+library(readxl)
 
-plots_list = list(outcome$composite_plot, outcome$cardiac_death_plot, outcome$MI_plot, outcome$TLR_plot)
+temp.death <- read_excel("excel_files/cause_of_death.xlsx")
 
-# Arrange plots (top half)
-plots <- arrangeGrob(
-  grobs = plots_list,
-  ncol = 2,
-  nrow = 2
-)
+library(dplyr)
 
-# Display
-grid.newpage()
-grid.draw(plots)
+temp <- matched_data %>%
+  rows_update(
+    temp.death %>% select(pt_id, cardiac_death), 
+    by = "pt_id",
+    unmatched = "ignore"  # 이 옵션을 추가하면 에러 없이 일치하는 행만 업데이트됩니다.
+  )
+matched_data <- temp

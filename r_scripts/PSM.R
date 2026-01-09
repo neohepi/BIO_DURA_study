@@ -135,6 +135,7 @@ check_balance <- function(psm_result, vars_to_check, cat_vars) {
 # ==============================================================================
 # 원본 데이터 로드
 df.toPSM <- df.pts # patient-level data
+#df.toPSM <- df.lesion.isr
 
 df.toPSM <- add_procedural_data(df.toPSM, df.lesion.all)
 
@@ -184,6 +185,7 @@ psm_result <- run_psm(
   match_vars = match_vars_list,
   keep_vars = keep_vars_list,
   caliper = 0.04,
+  #caliper = 0.1,
   ratio = 1
 )
 

@@ -233,7 +233,7 @@ outcome$TLR_plot <- result_TLR$plot
 ################################################################################
 # factor 결과값은 제대로 분석이 안됨
 # matched_data$next_MI <- as.numeric(as.character(matched_data$next_MI))
-# 
+# # 
 # result_next_MI <- analyze_landmark_survival(
 #   data = matched_data,
 #   group_var = "BP",
@@ -246,6 +246,7 @@ outcome$TLR_plot <- result_TLR$plot
 #   yrange = c(0, 0.08),
 #   plot_title = "MI"
 # )
+# print(result_next_MI$plot)
 
 result_TVMI <- analyze_landmark_survival(
   data = matched_data,
@@ -256,7 +257,7 @@ result_TVMI <- analyze_landmark_survival(
   fu_days_var = "fu_days",
   cap_years = 5,
   landmark_days = 365,
-  yrange = c(0, 0.03),
+  yrange = c(0, 0.04),
   plot_title = "TVMI"
 )
 

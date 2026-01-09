@@ -125,4 +125,3 @@ count_unique_id(df.lesion.all$pt_id) # 9,586
 sum(df.pts$BP == 0) # DP
 sum(df.pts$BP == 1) # BP
 
-
