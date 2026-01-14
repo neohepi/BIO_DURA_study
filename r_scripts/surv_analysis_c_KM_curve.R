@@ -1,12 +1,49 @@
 library(dplyr)
 library(survival)
 library(jskm)
-
-library(survival)
-library(jskm)
+library(cowplot)
+library(ggplot2)
 
 # ==============================================================================
-# 함수 정의: analyze_landmark_survival (processed_data 반환 기능 추가)
+# 유틸리티 함수
+# ==============================================================================
+safe_add_column <- function(data, col_name, values) {
+  if (col_name %in% names(data)) {
+    data <- data %>% select(-all_of(col_name))
+  }
+  data[[col_name]] <- values
+  return(data)
+}
+
+extract_cox_result <- function(model, label) {
+  if (is.null(model) || inherits(try(summary(model), silent = TRUE), "try-error")) {
+    return(data.frame(Period = label, HR = NA, CI_95 = NA, P_value = NA, stringsAsFactors = FALSE))
+  }
+  
+  summ <- summary(model)
+  if (nrow(summ$coefficients) == 0) {
+    return(data.frame(Period = label, HR = NA, CI_95 = NA, P_value = NA, stringsAsFactors = FALSE))
+  }
+  
+  coef <- summ$coefficients
+  conf <- summ$conf.int
+  
+  hr      <- round(conf[1, "exp(coef)"], 2)
+  ci_low  <- round(conf[1, "lower .95"], 2)
+  ci_high <- round(conf[1, "upper .95"], 2)
+  pval    <- format.pval(coef[1, "Pr(>|z|)"], eps = 0.001, digits = 3)
+  
+  return(data.frame(
+    Period = label,
+    HR = hr,
+    CI_95 = paste0(ci_low, " - ", ci_high),
+    P_value = pval,
+    stringsAsFactors = FALSE
+  ))
+}
+
+# ==============================================================================
+# Landmark Survival 분석 함수
 # ==============================================================================
 analyze_landmark_survival <- function(data, 
                                       group_var, 
@@ -17,348 +54,361 @@ analyze_landmark_survival <- function(data,
                                       cap_years = 5, 
                                       landmark_days = 365, 
                                       yrange = c(0, 0.20),
-                                      plot_title = "") {
+                                      plot_title = "",
+                                      group_labels = c("DP-DES", "BP-DES")) {
   
-  # [Step 0] 변수명 유효성 검사
   required_vars <- c(group_var, date_cag_var, date_event_var, event_status_var, fu_days_var)
   missing_vars <- setdiff(required_vars, names(data))
   
   if (length(missing_vars) > 0) {
-    stop(paste0("\n[Error] 다음 변수명을 데이터에서 찾을 수 없습니다:\n -> ", 
-                paste(missing_vars, collapse = ", "), 
-                "\n 철자를 확인하거나 colnames(data)를 체크해보세요."))
+    stop(paste0("[Error] 다음 변수를 찾을 수 없습니다: ", paste(missing_vars, collapse = ", ")))
   }
   
-  # [Step 1] 데이터 추출
   start_date <- data[[date_cag_var]]
   evt_date   <- data[[date_event_var]]
-  evt_status <- data[[event_status_var]]
+  evt_status <- as.numeric(data[[event_status_var]])
   fu_days    <- as.numeric(data[[fu_days_var]])
   group      <- data[[group_var]]
   
-  # [Step 2] 날짜 차이 계산 & Time 변수 생성
   diff_event <- as.numeric(evt_date - start_date)
   raw_time <- ifelse(evt_status == 1, diff_event, fu_days)
+  raw_time <- ifelse(is.na(raw_time) | raw_time <= 0, 0.1, raw_time)
   
-  # NA 처리 및 0 이하 보정
-  raw_time[is.na(raw_time)] <- 0.1 
-  raw_time[raw_time <= 0] <- 0.1
+  censor_time <- 365 * cap_years
+  time_capped <- pmin(raw_time, censor_time)
+  status_capped <- ifelse(raw_time > censor_time, 0, evt_status)
   
-  # [Step 3] Capping (5년)
-  CENSOR_TIME <- 365 * cap_years
-  
-  time_capped <- ifelse(raw_time > CENSOR_TIME, CENSOR_TIME, raw_time)
-  status_capped <- ifelse(raw_time > CENSOR_TIME, 0, evt_status)
-  
-  # [Step 4] 분석용 데이터프레임 생성
-  # (A) 내부 플로팅용 (컬럼명 고정)
-  working_data <- data.frame(
-    time_capped = time_capped,
-    status_capped = status_capped,
-    group = group
+  jskm_data <- data.frame(
+    time = time_capped,
+    status = status_capped,
+    group = as.factor(group)
   )
   
-  # (B) [New] 외부 반환용 (원본 데이터 + 계산된 결과)
-  # 원본 데이터에 분석된 status와 time을 붙여서 반환합니다.
-  processed_data <- data %>%
+  df_early <- jskm_data %>%
     mutate(
-      analyzed_time = time_capped,    # Capping된 시간
-      analyzed_status = status_capped # Capping된 이벤트 여부 (0/1)
+      time_lm = pmin(time, landmark_days),
+      status_lm = ifelse(time > landmark_days, 0, status)
     )
   
-  # [Step 5] Landmark 데이터셋 분리 (내부 분석용)
-  # (A) 0 ~ Landmark
-  data_0_LM <- working_data
-  data_0_LM$time_lm <- ifelse(working_data$time_capped > landmark_days, landmark_days, working_data$time_capped)
-  data_0_LM$status_lm <- ifelse(working_data$time_capped > landmark_days, 0, working_data$status_capped)
+  df_late <- jskm_data %>% filter(time > landmark_days)
   
-  # (B) Landmark ~ End
-  data_LM_End <- working_data[working_data$time_capped > landmark_days, ]
+  cox_overall <- tryCatch(coxph(Surv(time, status) ~ group, data = jskm_data), error = function(e) NULL)
+  cox_early <- tryCatch(coxph(Surv(time_lm, status_lm) ~ group, data = df_early), error = function(e) NULL)
+  cox_late <- tryCatch(coxph(Surv(time, status) ~ group, data = df_late), error = function(e) NULL)
   
-  # [Step 6] Survival Fit & Plot
-  fit_overall <- survfit(Surv(time_capped, status_capped) ~ group, data = working_data)
+  fit_overall <- eval(bquote(survfit(Surv(time, status) ~ group, data = jskm_data)))
   
-  # Cox Model
-  cox_overall <- coxph(Surv(time_capped, status_capped) ~ group, data = working_data)
-  cox_0_LM    <- coxph(Surv(time_lm, status_lm) ~ group, data = data_0_LM)
-  cox_LM_End  <- coxph(Surv(time_capped, status_capped) ~ group, data = data_LM_End)
-  
-  # Plotting with jskm
   if (landmark_days > 0) {
-    plot_obj <- jskm(fit_overall, 
-                     data = working_data,
-                     cumhaz = T, table = T, mark = F, 
-                     ystratalabs = c("DP-DES", "BP-DES"), 
-                     ylab = "Cumulative incidence (%)", 
-                     surv.scale = "percent", 
-                     ylims = yrange,
-                     timeby = 365,
-                     size.label.nrisk = 11,
-                     cut.landmark = landmark_days,
-                     showpercent = T,
-                     pval = T,
-                     pval.size = 4,
-                     pval.testname = F,
-                     pval.coord = c(150, yrange[2]*0.9),
-                     main = plot_title
+    plot_obj <- jskm(
+      fit_overall, data = jskm_data,
+      cumhaz = TRUE, table = TRUE, mark = FALSE, 
+      ystratalabs = group_labels, ystrataname = "",
+      ylab = "Cumulative incidence (%)", surv.scale = "percent", 
+      ylims = yrange, timeby = 365, size.label.nrisk = 11,
+      cut.landmark = landmark_days, showpercent = TRUE,
+      pval = TRUE, pval.size = 4, pval.testname = FALSE,
+      pval.coord = c(150, yrange[2] * 0.9), #main = plot_title
     )
   } else {
-    plot_obj <- jskm(fit_overall, 
-                     data = working_data,
-                     cumhaz = T, table = T, mark = F, 
-                     ystratalabs = c("DP-DES", "BP-DES"), 
-                     ylab = "Cumulative incidence (%)", 
-                     surv.scale = "percent", 
-                     ylims = yrange,
-                     timeby = 365,
-                     size.label.nrisk = 11,
-                     showpercent = T,
-                     pval = T,
-                     pval.size = 4,
-                     pval.testname = F,
-                     pval.coord = c(150, yrange[2]*0.9),
-                     main = plot_title
+    plot_obj <- jskm(
+      fit_overall, data = jskm_data,
+      cumhaz = TRUE, table = TRUE, mark = FALSE, 
+      ystratalabs = group_labels, ystrataname = "",
+      ylab = "Cumulative incidence (%)", surv.scale = "percent", 
+      ylims = yrange, timeby = 365, size.label.nrisk = 11,
+      showpercent = TRUE, pval = TRUE, pval.size = 4, 
+      pval.testname = FALSE, pval.coord = c(150, yrange[2] * 0.9), 
+      #main = plot_title
     )
   }
   
-  # [Step 7] 결과 테이블 정리
-  extract_cox_res <- function(model, label) {
-    if(is.null(model)) return(NULL)
-    summ <- summary(model)
-    coef <- summ$coefficients
-    conf <- summ$conf.int
-    
-    hr      <- round(conf[1, "exp(coef)"], 2)
-    ci_low  <- round(conf[1, "lower .95"], 2)
-    ci_high <- round(conf[1, "upper .95"], 2)
-    pval    <- format.pval(coef[1, "Pr(>|z|)"], eps = 0.001, digits = 3)
-    
-    return(data.frame(
-      Period = label,
-      HR = hr,
-      CI_95 = paste0(ci_low, " - ", ci_high),
-      P_value = pval,
-      stringsAsFactors = F
-    ))
-  }
-  
-  res_table <- rbind(
-    extract_cox_res(cox_overall, paste0("Overall (0-", cap_years, "y)")),
-    extract_cox_res(cox_0_LM,    paste0("Landmark (0-", landmark_days, "d)")),
-    extract_cox_res(cox_LM_End,  paste0("Landmark (", landmark_days, "d-", cap_years, "y)"))
+  result_table <- rbind(
+    extract_cox_result(cox_overall, paste0("Overall (0-", cap_years, "y)")),
+    extract_cox_result(cox_early, paste0("Early (0-", landmark_days, "d)")),
+    extract_cox_result(cox_late, paste0("Late (", landmark_days, "d-", cap_years, "y)"))
   )
   
   return(list(
     plot = plot_obj,
-    cox_table = res_table,
+    cox_table = result_table,
     fit = fit_overall,
-    processed_data = processed_data # [New] Era 분석을 위해 원본+결과 데이터 반환
+    analyzed_time = time_capped,
+    analyzed_status = status_capped
   ))
 }
 
-################################################################################
-# Composite Event
-################################################################################
-result_composite <- analyze_landmark_survival(
+# ==============================================================================
+# Landmark 없는 단순 Cumulative Incidence 분석 함수
+# ==============================================================================
+analyze_simple_survival <- function(data, 
+                                    group_var, 
+                                    date_cag_var, 
+                                    date_event_var, 
+                                    event_status_var, 
+                                    fu_days_var, 
+                                    cap_years = 5, 
+                                    yrange = c(0, 0.05),
+                                    plot_title = "",
+                                    group_labels = c("DP-DES", "BP-DES")) {
+  
+  required_vars <- c(group_var, date_cag_var, date_event_var, event_status_var, fu_days_var)
+  missing_vars <- setdiff(required_vars, names(data))
+  
+  if (length(missing_vars) > 0) {
+    stop(paste0("[Error] 다음 변수를 찾을 수 없습니다: ", paste(missing_vars, collapse = ", ")))
+  }
+  
+  # 변수 추출
+  start_date <- data[[date_cag_var]]
+  evt_date   <- data[[date_event_var]]
+  evt_status <- as.numeric(data[[event_status_var]])
+  fu_days    <- as.numeric(data[[fu_days_var]])
+  group      <- data[[group_var]]
+  
+  # Time 계산
+  diff_event <- as.numeric(evt_date - start_date)
+  raw_time <- ifelse(evt_status == 1, diff_event, fu_days)
+  raw_time <- ifelse(is.na(raw_time) | raw_time <= 0, 0.1, raw_time)
+  
+  # Capping
+  censor_time <- 365 * cap_years
+  time_capped <- pmin(raw_time, censor_time)
+  status_capped <- ifelse(raw_time > censor_time, 0, evt_status)
+  
+  # 분석용 데이터
+  jskm_data <- data.frame(
+    time = time_capped,
+    status = status_capped,
+    group = as.factor(group)
+  )
+  
+  # Cox 모델
+  cox_model <- tryCatch(
+    coxph(Surv(time, status) ~ group, data = jskm_data), 
+    error = function(e) NULL
+  )
+  
+  # Survfit
+  fit <- eval(bquote(survfit(Surv(time, status) ~ group, data = jskm_data)))
+  
+  # Plot (landmark 없음)
+  plot_obj <- jskm(
+    fit, data = jskm_data,
+    cumhaz = TRUE, 
+    table = TRUE, 
+    mark = FALSE, 
+    ystratalabs = group_labels, 
+    ystrataname = "",
+    ylab = "Cumulative incidence (%)", 
+    surv.scale = "percent", 
+    ylims = yrange, 
+    timeby = 365, 
+    size.label.nrisk = 11,
+    showpercent = TRUE, 
+    pval = TRUE, 
+    pval.size = 4, 
+    pval.testname = FALSE,
+    pval.coord = c(150, yrange[2] * 0.9), 
+    #main = plot_title
+  )
+  
+  # Cox 결과 테이블
+  result_table <- extract_cox_result(cox_model, paste0("Overall (0-", cap_years, "y)"))
+  
+  return(list(
+    plot = plot_obj,
+    cox_table = result_table,
+    fit = fit,
+    analyzed_time = time_capped,
+    analyzed_status = status_capped
+  ))
+}
+
+# ==============================================================================
+# 배치 분석 함수
+# ==============================================================================
+run_batch_analysis <- function(data, group_var = "BP", date_cag_var = "CAG_date",
+                               fu_days_var = "fu_days", outcomes,
+                               cap_years = 5, landmark_days = 365,
+                               group_labels = c("DP-DES", "BP-DES")) {
+  
+  results <- list()
+  output_data <- data
+  
+  for (outcome_name in names(outcomes)) {
+    cfg <- outcomes[[outcome_name]]
+    cat("\n=== Analyzing:", outcome_name, "===\n")
+    
+    result <- analyze_landmark_survival(
+      data = data, group_var = group_var, date_cag_var = date_cag_var,
+      date_event_var = cfg$date_var, event_status_var = cfg$status_var,
+      fu_days_var = fu_days_var, cap_years = cap_years,
+      landmark_days = landmark_days, yrange = cfg$yrange,
+      plot_title = if (!is.null(cfg$title)) cfg$title else "",
+      group_labels = group_labels
+    )
+    
+    results[[outcome_name]] <- result
+    time_col_name <- paste0("time_to_", outcome_name)
+    output_data <- safe_add_column(output_data, time_col_name, result$analyzed_time)
+    print(result$cox_table)
+  }
+  
+  return(list(results = results, data = output_data))
+}
+
+# ==============================================================================
+# 2x2 Grid Figure 생성 함수
+# ==============================================================================
+create_grid_figure <- function(plot_list, 
+                               labels = c("A", "B", "C", "D"),
+                               ncol = 2, nrow = 2,
+                               label_size = 14,
+                               label_fontface = "bold") {
+  
+  labeled_plots <- mapply(function(p, lab) {
+    p + 
+      ggtitle(lab) +
+      theme(
+        plot.title = element_text(
+          size = label_size, 
+          face = label_fontface,
+          hjust = 0,
+          margin = margin(b = 5)
+        )
+      )
+  }, plot_list, labels, SIMPLIFY = FALSE)
+  
+  grid_plot <- plot_grid(
+    plotlist = labeled_plots,
+    ncol = ncol,
+    nrow = nrow,
+    align = "hv",
+    axis = "tblr"
+  )
+  
+  return(grid_plot)
+}
+
+# ==============================================================================
+# Outcome 설정 (Landmark 분석용)
+# ==============================================================================
+outcomes_config <- list(
+  cardiac_death = list(
+    date_var = "cardiac_death_date",
+    status_var = "cardiac_death",
+    yrange = c(0, 0.04),
+    title = "Cardiac Death"
+  ),
+  TLR = list(
+    date_var = "TLR_date",
+    status_var = "TLR",
+    yrange = c(0, 0.05),
+    title = "TLR"
+  ),
+  TVMI = list(
+    date_var = "TVMI_date",
+    status_var = "TVMI",
+    yrange = c(0, 0.04),
+    title = "TV-MI"
+  ),
+  any_death = list(
+    date_var = "death_date",
+    status_var = "any_death",
+    yrange = c(0, 0.08),
+    title = "Any death"
+  )
+)
+
+# ==============================================================================
+# 실행: Landmark 분석 (4개 outcome)
+# ==============================================================================
+batch_results <- run_batch_analysis(
   data = matched_data,
   group_var = "BP",
   date_cag_var = "CAG_date",
-  date_event_var = "composite_date",   # <--- 여기만 변경
-  event_status_var = "composite_event",      # <--- 여기만 변경
   fu_days_var = "fu_days",
+  outcomes = outcomes_config,
   cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.10),
-  plot_title = "TLF"
+  landmark_days = 365
 )
 
-print(result_composite$cox_table)
-print(result_composite$plot)
+matched_data <- batch_results$data
 
-# ESC grid figure를 위한 code
-outcome <- list()
-outcome$composite_plot <- result_composite$plot
+# ==============================================================================
+# 실행: ST 분석 (Landmark 없음)
+# ==============================================================================
+cat("\n=== Analyzing: ST (No Landmark) ===\n")
 
-matched_data <- add_external_column(
-  target_data = matched_data,
-  source_data = result_composite$processed_data,
-  source_col = "analyzed_time",       # 원래 이름
-  new_col_name = "time_to_composite"  # 바꿀 이름 (함수 인자로 지정)
-)
-
-################################################################################
-# Cardiac death
-################################################################################
-result_cardiac_death <- analyze_landmark_survival(
+result_ST <- analyze_simple_survival(
   data = matched_data,
   group_var = "BP",
   date_cag_var = "CAG_date",
-  date_event_var = "cardiac_death_date",   # <--- 여기만 변경
-  event_status_var = "cardiac_death",      # <--- 여기만 변경
+  date_event_var = "ST_date",
+  event_status_var = "ST_outcome",
   fu_days_var = "fu_days",
   cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.04),
-  plot_title = "Cardiac Death"
+  yrange = c(0, 0.01),
+  plot_title = "Stent Thrombosis",
+  group_labels = c("DP-DES", "BP-DES")
 )
 
-print(result_cardiac_death$cox_table)
-print(result_cardiac_death$plot)
+print(result_ST$cox_table)
+print(result_ST$plot)
 
-outcome$cardiac_death_plot <- result_cardiac_death$plot
+# ST time 변수 추가
+matched_data <- safe_add_column(matched_data, "time_to_ST", result_ST$analyzed_time)
 
-################################################################################
-# TLR
-################################################################################
-result_TLR <- analyze_landmark_survival(
-  data = matched_data,
-  group_var = "BP",
-  date_cag_var = "CAG_date",
-  date_event_var = "TLR_date",   # <--- 여기만 변경
-  event_status_var = "TLR",      # <--- 여기만 변경
-  fu_days_var = "fu_days",
-  cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.05),
-  plot_title = "TLR"
+# ==============================================================================
+# 2x2 Grid Figure 생성 (Cardiac Death, TLR, TV-MI, Any death)
+# ==============================================================================
+plot_list_4 <- list(
+  batch_results$results$cardiac_death$plot,
+  batch_results$results$TLR$plot,
+  batch_results$results$TVMI$plot,
+  batch_results$results$any_death$plot
 )
 
-print(result_TLR$cox_table)
-print(result_TLR$plot)
-
-outcome$TLR_plot <- result_TLR$plot
-
-################################################################################
-# MI
-################################################################################
-# factor 결과값은 제대로 분석이 안됨
-# matched_data$next_MI <- as.numeric(as.character(matched_data$next_MI))
-# # 
-# result_next_MI <- analyze_landmark_survival(
-#   data = matched_data,
-#   group_var = "BP",
-#   date_cag_var = "CAG_date",
-#   date_event_var = "next_MI_date",   # <--- 여기만 변경
-#   event_status_var = "next_MI",      # <--- 여기만 변경
-#   fu_days_var = "fu_days",
-#   cap_years = 5,
-#   landmark_days = 365,
-#   yrange = c(0, 0.08),
-#   plot_title = "MI"
-# )
-# print(result_next_MI$plot)
-
-result_TVMI <- analyze_landmark_survival(
-  data = matched_data,
-  group_var = "BP",
-  date_cag_var = "CAG_date",
-  date_event_var = "TVMI_date",   # <--- 여기만 변경
-  event_status_var = "TVMI",      # <--- 여기만 변경
-  fu_days_var = "fu_days",
-  cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.04),
-  plot_title = "TVMI"
+grid_fig_4 <- create_grid_figure(
+  plot_list = plot_list_4,
+  labels = c("A", "B", "C", "D"),
+  ncol = 2, nrow = 2,
+  label_size = 16, label_fontface = "bold"
 )
 
+print(grid_fig_4)
 
-print(result_TVMI$cox_table)
-print(result_TVMI$plot)
+# 저장
+ggsave("Figure_secondary_outcomes_2x2.png", grid_fig_4, width = 14, height = 12, dpi = 300)
+ggsave("Figure_secondary_outcomes_2x2.tiff", grid_fig_4, width = 14, height = 12, dpi = 300, compression = "lzw")
+ggsave("Figure_secondary_outcomes_2x2.pdf", grid_fig_4, width = 14, height = 12)
 
-matched_data <- add_external_column(
-  target_data = matched_data,
-  source_data = result_composite$processed_data,
-  source_col = "analyzed_time",       # 원래 이름
-  new_col_name = "time_to_MI"  # 바꿀 이름 (함수 인자로 지정)
+# ==============================================================================
+# ST 단독 Figure 저장
+# ==============================================================================
+ggsave("Figure_ST.png", result_ST$plot, width = 7, height = 6, dpi = 300)
+ggsave("Figure_ST.tiff", result_ST$plot, width = 7, height = 6, dpi = 300, compression = "lzw")
+ggsave("Figure_ST.pdf", result_ST$plot, width = 7, height = 6)
+
+# ==============================================================================
+# (선택) 5개 모두 포함한 Grid (2x3 또는 3x2)
+# ==============================================================================
+plot_list_5 <- list(
+  batch_results$results$cardiac_death$plot,
+  batch_results$results$TLR$plot,
+  batch_results$results$TVMI$plot,
+  batch_results$results$any_death$plot,
+  result_ST$plot
 )
 
-outcome$MI_plot <-result_TVMI$plot
-
-################################ Early
-#install.packages("survminer")
-library(survminer)
-fit <- survfit(
-  Surv(time_to_MI, TVMI) ~ BP,
-  data = matched_data
-)
-#matched_data <- matched_data %>% rename(time_to_composite=time_to_composite...58)
-
-
-ggsurvplot(
-  fit,
-  data = matched_data,
-  fun = "event",  # Cumulative incidence
-  xlim = c(0, 365),  # 첫 1년만
-  break.time.by = 30,
-  risk.table = TRUE
+# 2x3 grid (빈 공간 하나)
+grid_fig_5 <- create_grid_figure(
+  plot_list = plot_list_5,
+  labels = c("A", "B", "C", "D", "E"),
+  ncol = 3, nrow = 2,
+  label_size = 14, label_fontface = "bold"
 )
 
-################################################################################
-# Any death
-################################################################################
-result_any_death <- analyze_landmark_survival(
-  data = matched_data,
-  group_var = "BP",
-  date_cag_var = "CAG_date",
-  date_event_var = "death_date",   # <--- 여기만 변경
-  event_status_var = "any_death",      # <--- 여기만 변경
-  fu_days_var = "fu_days",
-  cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.08),
-  plot_title = "Any death"
-)
+print(grid_fig_5)
 
-print(result_any_death$cox_table)
-print(result_any_death$plot)
-
-matched_data <- add_external_column(
-  target_data = matched_data,
-  source_data = result_composite$processed_data,
-  source_col = "analyzed_time",       # 원래 이름
-  new_col_name = "time_to_death"  # 바꿀 이름 (함수 인자로 지정)
-)
-
-
-
-################################################################################
-# TVR
-################################################################################
-result_TVR <- analyze_landmark_survival(
-  data = matched_data,
-  group_var = "BP",
-  date_cag_var = "CAG_date",
-  date_event_var = "TVR_date",   # <--- 여기만 변경
-  event_status_var = "TVR",      # <--- 여기만 변경
-  fu_days_var = "fu_days",
-  cap_years = 5,
-  landmark_days = 365,
-  yrange = c(0, 0.08),
-  plot_title = "TVR"
-)
-
-print(result_TVR$cox_table)
-print(result_TVR$plot)
-
-
-# ################################################################################
-# # ST
-# ################################################################################
-# result_ST <- analyze_landmark_survival(
-#   data = matched_data,
-#   group_var = "BP",
-#   date_cag_var = "CAG_date",
-#   date_event_var = "ST_date",   # <--- 여기만 변경
-#   event_status_var = "ST_outcome",      # <--- 여기만 변경
-#   fu_days_var = "fu_days",
-#   cap_years = 5,
-#   landmark_days = 365,
-#   yrange = c(0, 0.01),
-#   #  plot_title = "Primary Composite"
-# )
-# 
-# print(result_ST$cox_table)
-# print(result_ST$plot)
-# 
-# matched_data %>% filter(BP == 0 & ST_outcome == 1) %>% count()
-# matched_data %>% filter(BP == 1 & ST_outcome == 1) %>% count()
+ggsave("Figure_all_outcomes_2x3.png", grid_fig_5, width = 18, height = 12, dpi = 300)

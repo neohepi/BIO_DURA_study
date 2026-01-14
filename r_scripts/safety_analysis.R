@@ -330,6 +330,7 @@ create_ST_variables_corrected <- function(data,
       # 2. Time Truncation (최대 기간으로 자르기)
       time_to_ST = pmin(raw_days_to_event, max_followup_days),
       
+      
       # 3. Outcome Censoring (가장 중요!)
       # 원래 이벤트가 있었더라도(1), 기간(1825일)을 넘겨서 발생했다면 0으로 변경
       ST_outcome_censored = case_when(

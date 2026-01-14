@@ -1,419 +1,257 @@
 ################################################################################
-# Publication-Quality Forest Plots for Subgroup Analysis
+# Subgroup Forest Plot - 기존 분석 결과 사용
 ################################################################################
 
-#install.packages("forestplot")
-library(forestplot)
+library(ggplot2)
 library(dplyr)
 
 ################################################################################
-# Function: Create Enhanced Forest Plot
+# Function: 기존 subgroup_results를 forest plot 형식으로 변환
 ################################################################################
 
-create_enhanced_forest_plot <- function(subgroup_data, 
-                                        title = "Subgroup Analysis",
-                                        filename = NULL) {
+convert_to_forest_format <- function(subgroup_results) {
   
-  # Prepare data
-  forest_data <- subgroup_data %>%
-    arrange(desc(row_number())) %>%  # Reverse for bottom-up plotting
-    mutate(
-      # Format labels
-      label = if_else(Category == "All Patients", 
-                      "Overall", 
-                      paste0("  ", Category)),
-      
-      # Events text
-      events_text = sprintf("%d/%d", Events_BP, N_BP),
-      events_dp_text = sprintf("%d/%d", Events_DP, N_DP),
-      
-      # HR text
-      hr_text = sprintf("%.2f (%.2f-%.2f)", HR, CI_lower, CI_upper),
-      
-      # P value text
-      p_text = if_else(P_value < 0.001, 
-                       "<0.001", 
-                       sprintf("%.3f", P_value)),
-      
-      # Interaction p-value (only show once per subgroup)
-      p_int_display = ""
-    )
+  # 결과 저장용
+  forest_data <- data.frame()
   
-  # Add interaction p-values to first row of each subgroup
-  for (sg in unique(forest_data$Subgroup[forest_data$Subgroup != "Overall"])) {
-    first_row <- which(forest_data$Subgroup == sg)[1]
-    p_int <- forest_data$P_interaction[first_row]
-    if (!is.na(p_int)) {
-      forest_data$p_int_display[first_row] <- sprintf("P int = %.3f", p_int)
+  # 1. Overall 추가
+  overall_row <- subgroup_results %>% 
+    filter(Category == "All Patients")
+  
+  if (nrow(overall_row) > 0) {
+    forest_data <- rbind(forest_data, data.frame(
+      Subgroup = "Overall",
+      Category = "All Patients",
+      HR = overall_row$HR,
+      CI_lower = overall_row$CI_lower,
+      CI_upper = overall_row$CI_upper,
+      P_value = overall_row$P_value,
+      P_interaction = NA,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # 2. 각 Subgroup 처리
+  subgroups <- unique(subgroup_results$Subgroup[subgroup_results$Subgroup != "Overall"])
+  
+  for (sg in subgroups) {
+    sg_data <- subgroup_results %>% filter(Subgroup == sg)
+    
+    # P_interaction 값 추출 (첫 행에서)
+    p_int <- sg_data$P_interaction[1]
+    
+    # Header 행 추가
+    forest_data <- rbind(forest_data, data.frame(
+      Subgroup = sg,
+      Category = sg,  # Header: Subgroup == Category
+      HR = NA,
+      CI_lower = NA,
+      CI_upper = NA,
+      P_value = NA,
+      P_interaction = p_int,
+      stringsAsFactors = FALSE
+    ))
+    
+    # Category 행 추가
+    for (i in 1:nrow(sg_data)) {
+      forest_data <- rbind(forest_data, data.frame(
+        Subgroup = sg,
+        Category = sg_data$Category[i],
+        HR = sg_data$HR[i],
+        CI_lower = sg_data$CI_lower[i],
+        CI_upper = sg_data$CI_upper[i],
+        P_value = sg_data$P_value[i],
+        P_interaction = NA,
+        stringsAsFactors = FALSE
+      ))
     }
   }
   
-  # Create table text matrix
-  tabletext <- cbind(
-    c("Subgroup", forest_data$label),
-    c("BP-DES\nEvents/Total", forest_data$events_text),
-    c("DP-DES\nEvents/Total", forest_data$events_dp_text),
-    c("HR (95% CI)", forest_data$hr_text),
-    c("P Value", forest_data$p_text),
-    c("", forest_data$p_int_display)
-  )
-  
-  # Determine which rows are summary/subgroup headers
-  is_summary <- c(TRUE, forest_data$Category == "All Patients")
-  is_subgroup <- c(FALSE, !grepl("^  ", forest_data$label) & 
-                     forest_data$Category != "All Patients")
-  
-  # Create forest plot
-  fp <- forestplot(
-    labeltext = tabletext,
-    mean = c(NA, forest_data$HR),
-    lower = c(NA, forest_data$CI_lower),
-    upper = c(NA, forest_data$CI_upper),
-    
-    # Title and labels
-    title = title,
-    xlab = "Favors BP-DES          Favors DP-DES",
-    
-    # Reference line
-    zero = 1,
-    
-    # Clip extreme values
-    clip = c(0.2, 2.5),
-    
-    # Line at null
-    grid = structure(c(1), 
-                     gp = gpar(lty = 2, col = "gray60")),
-    
-    # X-axis ticks
-    xticks = c(0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5),
-    
-    # Box sizes proportional to precision (inverse variance)
-    boxsize = 0.25,
-    
-    # Colors
-    col = fpColors(
-      box = "royalblue",
-      line = "darkblue",
-      summary = "darkred",
-      hrz_lines = "gray70"
-    ),
-    
-    # Summary indicators
-    is.summary = is_summary,
-    
-    # Styling for text
-    txt_gp = fpTxtGp(
-      label = list(
-        gpar(fontface = "plain", cex = 0.9),
-        gpar(fontface = ifelse(is_summary[-1] | is_subgroup[-1], 
-                               "bold", "plain"), 
-             cex = ifelse(is_summary[-1], 1.0, 0.9))
-      ),
-      ticks = gpar(cex = 0.8),
-      xlab = gpar(cex = 0.9, fontface = "bold"),
-      title = gpar(cex = 1.1, fontface = "bold")
-    ),
-    
-    # Line properties
-    lwd.xaxis = 1,
-    lwd.ci = 1.5,
-    lwd.zero = 2,
-    
-    # Graph width
-    graphwidth = unit(70, "mm"),
-    
-    # Column widths
-    colgap = unit(3, "mm"),
-    
-    # Add horizontal lines
-    hrzl_lines = list(
-      "2" = gpar(lwd = 2, col = "black"),  # After header
-      "3" = gpar(lwd = 1, col = "gray80")  # After overall
-    ),
-    
-    # Vertices for CI lines
-    vertices = TRUE
-  )
-  
-  # Save if filename provided
-  if (!is.null(filename)) {
-    pdf(filename, width = 11, height = 8)
-    print(fp)
-    dev.off()
-    
-    # Also save as high-res TIFF
-    tiff(gsub("\\.pdf$", ".tiff", filename), 
-         width = 11, height = 8, units = "in", res = 300, compression = "lzw")
-    print(fp)
-    dev.off()
-    
-    # And PNG for presentations
-    png(gsub("\\.pdf$", ".png", filename), 
-        width = 11, height = 8, units = "in", res = 300)
-    print(fp)
-    dev.off()
-  }
-  
-  return(fp)
+  return(forest_data)
 }
 
-
 ################################################################################
-# Create Forest Plots
-################################################################################
-
-# 1. TLF at 5 Years
-fp_tlf <- create_enhanced_forest_plot(
-  subgroup_data = subgroup_results_tlf,
-  title = "Target Lesion Failure at 5 Years - Subgroup Analysis",
-  filename = "Figure_Forest_Plot_TLF.pdf"
-)
-
-print(fp_tlf)
-
-# 2. MI at 1 Year
-fp_mi <- create_enhanced_forest_plot(
-  subgroup_data = subgroup_results_mi,
-  title = "Myocardial Infarction at 1 Year - Subgroup Analysis",
-  filename = "Figure_Forest_Plot_MI.pdf"
-)
-
-print(fp_mi)
-
-
-################################################################################
-# Alternative: Side-by-Side Comparison Plot
+# Function: Create Publication-Style Forest Plot
 ################################################################################
 
-library(ggplot2)
-library(patchwork)
-library(ggplot2)
-library(dplyr)
-library(patchwork)
-
-create_ggplot_forest <- function(data, title, y_min = 0.2, y_max = 2.5) {
+create_forest_plot <- function(data,
+                               x_breaks = c(0.5, 0.75, 1.0, 1.5, 2.0),
+                               x_limits = c(0.35, 2.5),
+                               filename = NULL) {
   
-  # 1. 데이터 준비 (row_number()를 여기서 미리 계산)
+  # 데이터 준비
+  n_rows <- nrow(data)
+  
   plot_data <- data %>%
     mutate(
-      label = if_else(Category == "All Patients", 
-                      "Overall", 
-                      Category),
-      subgroup_label = if_else(Category == "All Patients", 
-                               Subgroup, 
-                               ""),
-      color_group = case_when(
+      row_id = row_number(),
+      y_pos = n_rows - row_id + 1,
+      
+      is_header = (Category == Subgroup | Category == "All Patients"),
+      is_overall = (Category == "All Patients"),
+      
+      display_label = case_when(
         Category == "All Patients" ~ "Overall",
-        Subgroup == "Age" ~ "Age",
-        Subgroup == "Sex" ~ "Sex",
-        Subgroup == "Diabetes" ~ "Diabetes",
-        Subgroup == "Clinical Presentation" ~ "Presentation",
-        TRUE ~ "Other"
+        Category == Subgroup ~ Category,
+        TRUE ~ paste0("  ", Category)
       ),
-      # 유의성 마커
-      sig_marker = case_when(
-        P_value < 0.01 ~ "**",
-        P_value < 0.05 ~ "*",
-        P_value < 0.10 ~ "†",
+      
+      hr_text = if_else(
+        !is.na(HR),
+        sprintf("%.2f (%.2f-%.2f)", HR, CI_lower, CI_upper),
+        ""
+      ),
+      
+      p_int_text = case_when(
+        !is.na(P_interaction) & is_header & !is_overall ~ 
+          sprintf("P int = %.3f", P_interaction),
         TRUE ~ ""
-      )
-    ) %>%
-    # 순서를 위한 정렬 및 ID 생성 (가장 중요한 수정 부분)
-    arrange(desc(row_number())) %>% 
-    mutate(plot_order = row_number()) 
+      ),
+      
+      label_color = if_else(is_overall, "red", "black")
+    )
   
-  # 2. 플롯 생성
-  p <- ggplot(plot_data, aes(y = reorder(label, plot_order), x = HR)) +
+  # 플롯 생성
+  p <- ggplot(plot_data, aes(y = y_pos)) +
     
-    # Reference line at HR=1
-    geom_vline(xintercept = 1, linetype = "dashed", 
-               color = "gray50", linewidth = 0.8) + # size -> linewidth 수정
-    
-    # Confidence intervals
-    # geom_errorbarh 대신 geom_errorbar 사용 (y축 매핑 시 자동 인식)
-    geom_errorbar(aes(xmin = CI_lower, xmax = CI_upper, color = color_group),
-                  width = 0.3, linewidth = 1) + # height -> width, size -> linewidth
-    
-    # Point estimates
-    geom_point(aes(color = color_group, size = color_group, 
-                   shape = color_group)) +
-    
-    # Color and size scales
-    scale_color_manual(
-      values = c("Overall" = "#E41A1C", 
-                 "Age" = "#377EB8", 
-                 "Sex" = "#4DAF4A",
-                 "Diabetes" = "#984EA3", 
-                 "Presentation" = "#FF7F00",
-                 "Other" = "gray50")
+    # 배경 줄무늬
+    geom_rect(
+      data = plot_data %>% filter(row_id %% 2 == 0),
+      aes(ymin = y_pos - 0.5, ymax = y_pos + 0.5),
+      xmin = -Inf, xmax = Inf,
+      fill = "gray96", inherit.aes = FALSE
     ) +
     
-    scale_size_manual(
-      values = c("Overall" = 4, 
-                 "Age" = 3, 
-                 "Sex" = 3,
-                 "Diabetes" = 3, 
-                 "Presentation" = 3,
-                 "Other" = 3)
+    # Reference line
+    geom_vline(xintercept = 1, linetype = "dashed", color = "darkgreen", linewidth = 0.7) +
+    
+    # CI lines (NA 제외)
+    geom_segment(
+      data = plot_data %>% filter(!is.na(HR)),
+      aes(x = CI_lower, xend = CI_upper, yend = y_pos),
+      linewidth = 0.7, color = "darkblue"
     ) +
     
-    scale_shape_manual(
-      values = c("Overall" = 18, # Diamond
-                 "Age" = 16,     # Circle
-                 "Sex" = 17,     # Triangle
-                 "Diabetes" = 15, # Square
-                 "Presentation" = 16,
-                 "Other" = 16)
+    # Points - Overall (diamond)
+    geom_point(
+      data = plot_data %>% filter(is_overall & !is.na(HR)),
+      aes(x = HR),
+      shape = 23, size = 4, fill = "red", color = "darkred"
     ) +
     
-    # X-axis (log scale)
+    # Points - Subgroups (square)
+    geom_point(
+      data = plot_data %>% filter(!is_overall & !is.na(HR)),
+      aes(x = HR),
+      shape = 22, size = 2.5, fill = "steelblue", color = "darkblue"
+    ) +
+    
+    # 왼쪽 라벨
+    geom_text(
+      aes(x = x_limits[1] * 0.55, label = display_label, 
+          fontface = if_else(is_header, "bold", "plain"),
+          color = label_color),
+      hjust = 0, size = 3.3
+    ) +
+    
+    # 오른쪽 HR 텍스트
+    geom_text(
+      aes(x = x_limits[2] * 1.05, label = hr_text,
+          fontface = if_else(is_overall, "bold", "plain"),
+          color = label_color),
+      hjust = 0, size = 3
+    ) +
+    
+    # P interaction
+    geom_text(
+      aes(x = x_limits[2] * 1.55, label = p_int_text),
+      hjust = 0, size = 2.8, color = "gray40", fontface = "italic"
+    ) +
+    
+    # Scales
     scale_x_continuous(
-      trans = "log",
-      breaks = c(0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5),
-      limits = c(y_min, y_max),
-      labels = c("0.25", "0.5", "0.75", "1.0", "1.5", "2.0", "2.5")
+      trans = "log10",
+      breaks = x_breaks,
+      labels = x_breaks,
+      limits = c(x_limits[1] * 0.45, x_limits[2] * 2),
+      expand = c(0, 0)
     ) +
+    scale_y_continuous(expand = c(0.03, 0.03)) +
+    scale_color_identity() +
     
-    # Labels
-    labs(
-      title = title,
-      x = "Hazard Ratio (95% CI)\nFavors BP-DES      Favors DP-DES",
-      y = NULL
-    ) +
+    # Favors 라벨
+    annotate("text", x = 0.6, y = 0, label = "Favors\nBP-DES", 
+             size = 2.8, fontface = "italic", color = "gray50", lineheight = 0.9) +
+    annotate("text", x = 1.7, y = 0, label = "Favors\nDP-DES", 
+             size = 2.8, fontface = "italic", color = "gray50", lineheight = 0.9) +
+    
+    # X축 라벨
+    labs(x = "Hazard Ratio (BP-DES vs DP-DES)") +
     
     # Theme
-    theme_classic(base_size = 12) +
+    theme_minimal(base_size = 11) +
     theme(
       legend.position = "none",
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
-      axis.text.y = element_text(size = 10),
-      axis.title.x = element_text(size = 11, face = "bold"),
-      axis.line.y = element_blank(),
+      axis.title.y = element_blank(),
+      axis.text.y = element_blank(),
       axis.ticks.y = element_blank(),
-      panel.grid.major.x = element_line(color = "gray90", linewidth = 0.3), # size -> linewidth
-      plot.margin = margin(10, 20, 10, 10)
+      axis.title.x = element_text(size = 10, face = "bold", margin = margin(t = 8)),
+      axis.text.x = element_text(size = 9),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(color = "gray85", linewidth = 0.3),
+      plot.margin = margin(10, 120, 10, 10),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA)
     ) +
     
-    # Add HR values as text
-    geom_text(aes(label = sprintf("%.2f", HR)), 
-              vjust = -1.5, size = 3, fontface = "bold") + # hjust 대신 vjust 조정이 나을 수 있음 (취향 차이)
+    coord_cartesian(clip = "off")
+  
+  # 저장
+  if (!is.null(filename)) {
+    height_calc <- n_rows * 0.32 + 1.5
     
-    # Add significance markers
-    geom_text(aes(label = sig_marker, x = CI_upper), 
-              hjust = -0.5, size = 4, color = "red")
+    ggsave(paste0(filename, ".png"), p, width = 10, height = height_calc, dpi = 300)
+    ggsave(paste0(filename, ".tiff"), p, width = 10, height = height_calc, dpi = 300, compression = "lzw")
+    ggsave(paste0(filename, ".pdf"), p, width = 10, height = height_calc)
+    
+    cat("Saved:", filename, "(png/tiff/pdf)\n")
+  }
   
   return(p)
 }
 
-# --- 실행 테스트 ---
+################################################################################
+# 실행: 기존 subgroup_results_tlf 사용
+################################################################################
 
-# Create ggplot versions
-p_tlf <- create_ggplot_forest(
-  subgroup_results_tlf,
-  "Target Lesion Failure at 5 Years"
+# 1. 기존 결과를 forest plot 형식으로 변환
+forest_data_tlf <- convert_to_forest_format(subgroup_results_tlf)
+
+# 2. 결과 확인
+print(forest_data_tlf)
+
+# 3. Forest plot 생성
+forest_tlf <- create_forest_plot(
+  data = forest_data_tlf,
+  x_breaks = c(0.5, 0.75, 1.0, 1.5, 2.0),
+  x_limits = c(0.4, 2.2),
+  filename = "Figure_Subgroup_TLF_5years"
 )
 
-p_mi <- create_ggplot_forest(
-  subgroup_results_mi,
-  "Myocardial Infarction at 1 Year"
-)
-
-# Combined plot
-combined_forest <- (p_tlf | p_mi) +
-  plot_annotation(
-    tag_levels = 'A',
-    theme = theme(plot.title = element_text(size = 14, face = "bold"))
-  )
-
-# Save
-ggsave("Figure_Forest_Combined.pdf", combined_forest, 
-       width = 14, height = 7, dpi = 300)
-
-print(p_tlf)
-print(p_mi)
-
-
+print(forest_tlf)
 
 ################################################################################
-# Summary Statistics Table for Forest Plot
+# MI at 1 Year도 동일하게 처리
 ################################################################################
 
-cat("\n", rep("=", 70), "\n")
-cat("FOREST PLOT DATA SUMMARY\n")
-cat(rep("=", 70), "\n\n")
-
-cat("TLF at 5 Years - Significant Subgroups (P<0.10):\n")
-subgroup_results_tlf %>%
-  filter(P_value < 0.10) %>%
-  select(Subgroup, Category, HR, CI_lower, CI_upper, P_value) %>%
-  mutate(across(where(is.numeric), ~round(., 3))) %>%
-  print()
-
-cat("\n\nMI at 1 Year - Significant Subgroups (P<0.10):\n")
-subgroup_results_mi %>%
-  filter(P_value < 0.10) %>%
-  select(Subgroup, Category, HR, CI_lower, CI_upper, P_value) %>%
-  mutate(across(where(is.numeric), ~round(., 3))) %>%
-  print()
-
-cat("\n\nInteractions P<0.10:\n")
-all_interactions <- bind_rows(
-  subgroup_results_tlf %>% 
-    filter(!is.na(P_interaction)) %>%
-    group_by(Subgroup) %>% 
-    slice(1) %>%
-    select(Subgroup, P_interaction) %>%
-    mutate(Endpoint = "TLF at 5 Years"),
-  
-  subgroup_results_mi %>% 
-    filter(!is.na(P_interaction)) %>%
-    group_by(Subgroup) %>% 
-    slice(1) %>%
-    select(Subgroup, P_interaction) %>%
-    mutate(Endpoint = "MI at 1 Year")
-) %>%
-  filter(P_interaction < 0.10) %>%
-  arrange(P_interaction)
-
-if (nrow(all_interactions) > 0) {
-  print(all_interactions)
-} else {
-  cat("No interactions with P<0.10\n")
-}
-
-cat("\n", rep("=", 70), "\n")
-
-
-################################################################################
-# Figure Legend Template
-################################################################################
-
-cat("\n=== FIGURE LEGEND ===\n\n")
-
-cat("Figure X. Subgroup Analysis for Target Lesion Failure at 5 Years
-
-Forest plot showing hazard ratios (HRs) and 95% confidence 
-intervals (CIs) for target lesion failure at 5 years comparing 
-biodegradable polymer drug-eluting stents (BP-DES) with durable 
-polymer drug-eluting stents (DP-DES) across pre-specified subgroups. 
-The overall treatment effect is shown at the top (diamond), followed 
-by subgroup-specific estimates (squares). Box sizes are proportional 
-to the precision of estimates. HRs less than 1.0 favor BP-DES. 
-P values for interaction test whether treatment effects differ 
-significantly across subgroup categories. * P<0.05; ** P<0.01; 
-† P<0.10.\n\n")
-
-cat("Figure Y. Subgroup Analysis for Myocardial Infarction at 1 Year
-
-Forest plot showing hazard ratios (HRs) and 95% confidence 
-intervals (CIs) for myocardial infarction at 1 year comparing 
-biodegradable polymer drug-eluting stents (BP-DES) with durable 
-polymer drug-eluting stents (DP-DES) across pre-specified subgroups. 
-The overall treatment effect is shown at the top (diamond), followed 
-by subgroup-specific estimates (squares). Significant reductions in 
-myocardial infarction were observed in younger patients (<65 years, 
-HR 0.56, P=0.016) and male patients (HR 0.60, P=0.014), although 
-formal tests for interaction did not reach statistical significance. 
-HRs less than 1.0 favor BP-DES. * P<0.05; ** P<0.01; † P<0.10.\n\n")
-
-cat(rep("=", 70), "\n")
+# forest_data_mi <- convert_to_forest_format(subgroup_results_mi)
+# 
+# forest_mi <- create_forest_plot(
+#   data = forest_data_mi,
+#   x_breaks = c(0.5, 0.75, 1.0, 1.5, 2.0),
+#   x_limits = c(0.3, 2.5),
+#   filename = "Figure_Subgroup_MI"
+# )
+# 
+# print(forest_mi)
