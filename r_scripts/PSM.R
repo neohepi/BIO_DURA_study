@@ -4,6 +4,7 @@ library(tableone)
 library(cobalt)
 library(skimr)
 
+
 # -----------------------------------------------------------------------------
 # 함수 1: 데이터 전처리 (Era 생성 및 Treatment 변수 정리)
 # -----------------------------------------------------------------------------
@@ -12,7 +13,7 @@ prepare_psm_data <- function(data, treat_col = "BP", year_col = "procedure_year"
     # 1. Treatment 변수 Factor 변환 (0, 1 보장)
     mutate(
       !!sym(treat_col) := as.integer(as.character(!!sym(treat_col))),
-      !!sym(treat_col) := factor(!!sym(treat_col), levels = c(0, 1))
+      !!sym(treat_col) := factor(!!sym(treat_col), levels = c(0, 1)),
     ) %>%
     filter(!is.na(!!sym(treat_col)))
   # era는 이미 생성되었으므로 사용하지 않음
@@ -137,7 +138,7 @@ check_balance <- function(psm_result, vars_to_check, cat_vars) {
 df.toPSM <- df.pts # patient-level data
 #df.toPSM <- df.lesion.isr
 
-df.toPSM <- add_procedural_data(df.toPSM, df.lesion.all)
+#df.toPSM <- add_procedural_data(df.toPSM, df.lesion.all)
 
 # 매칭에 사용할 변수 (NA 있으면 안됨)
 match_vars_list <- c("age", "male", "BMI", "smoking",
@@ -160,7 +161,8 @@ keep_vars_list <- c("pt_id", "procedure_year", "CAG_date", "fu_days", "ACS_type"
                     "any_death", "death_date", 
                     "next_MI", "next_MI_date",
                     "composite_event", "composite_date",
-                    "ST_outcome", "ST_date")
+                    "ST_outcome", "ST_date",
+                    "stent_names")
 
 # Table 1에 표시할 변수 (보통 match_vars와 비슷하지만 더 많을 수도 있음)
 table1_vars <- match_vars_list

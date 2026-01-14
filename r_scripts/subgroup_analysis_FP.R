@@ -1,5 +1,5 @@
 ################################################################################
-# Subgroup Forest Plot - 기존 분석 결과 사용
+# Subgroup Forest Plot - CI Truncation with Arrows
 ################################################################################
 
 library(ggplot2)
@@ -71,7 +71,7 @@ convert_to_forest_format <- function(subgroup_results) {
 }
 
 ################################################################################
-# Function: Create Publication-Style Forest Plot
+# Function: Create Publication-Style Forest Plot with Arrow Truncation
 ################################################################################
 
 create_forest_plot <- function(data,
@@ -81,6 +81,10 @@ create_forest_plot <- function(data,
   
   # 데이터 준비
   n_rows <- nrow(data)
+  
+  # Truncation 경계 설정
+  lower_bound <- x_limits[1]
+  upper_bound <- x_limits[2]
   
   plot_data <- data %>%
     mutate(
@@ -96,15 +100,28 @@ create_forest_plot <- function(data,
         TRUE ~ paste0("  ", Category)
       ),
       
+      # 원본 CI 저장 (텍스트 표시용)
+      CI_lower_orig = CI_lower,
+      CI_upper_orig = CI_upper,
+      
+      # Truncation 여부 확인
+      truncated_lower = !is.na(CI_lower) & CI_lower < lower_bound,
+      truncated_upper = !is.na(CI_upper) & CI_upper > upper_bound,
+      
+      # 표시용 CI (truncated)
+      CI_lower_plot = if_else(truncated_lower, lower_bound, CI_lower),
+      CI_upper_plot = if_else(truncated_upper, upper_bound, CI_upper),
+      
+      # HR 텍스트 (원본 값 사용)
       hr_text = if_else(
         !is.na(HR),
-        sprintf("%.2f (%.2f-%.2f)", HR, CI_lower, CI_upper),
+        sprintf("%.2f (%.2f-%.2f)", HR, CI_lower_orig, CI_upper_orig),
         ""
       ),
       
       p_int_text = case_when(
         !is.na(P_interaction) & is_header & !is_overall ~ 
-          sprintf("P int = %.3f", P_interaction),
+          sprintf("%.3f", P_interaction),
         TRUE ~ ""
       ),
       
@@ -125,11 +142,47 @@ create_forest_plot <- function(data,
     # Reference line
     geom_vline(xintercept = 1, linetype = "dashed", color = "darkgreen", linewidth = 0.7) +
     
-    # CI lines (NA 제외)
+    # CI lines - 일반 (truncation 없는 경우)
     geom_segment(
-      data = plot_data %>% filter(!is.na(HR)),
-      aes(x = CI_lower, xend = CI_upper, yend = y_pos),
+      data = plot_data %>% filter(!is.na(HR) & !truncated_lower & !truncated_upper),
+      aes(x = CI_lower_plot, xend = CI_upper_plot, yend = y_pos),
       linewidth = 0.7, color = "darkblue"
+    ) +
+    
+    # CI lines - Lower truncated only
+    geom_segment(
+      data = plot_data %>% filter(!is.na(HR) & truncated_lower & !truncated_upper),
+      aes(x = CI_lower_plot, xend = CI_upper_plot, yend = y_pos),
+      linewidth = 0.7, color = "darkblue"
+    ) +
+    
+    # CI lines - Upper truncated only
+    geom_segment(
+      data = plot_data %>% filter(!is.na(HR) & !truncated_lower & truncated_upper),
+      aes(x = CI_lower_plot, xend = CI_upper_plot, yend = y_pos),
+      linewidth = 0.7, color = "darkblue"
+    ) +
+    
+    # CI lines - Both truncated
+    geom_segment(
+      data = plot_data %>% filter(!is.na(HR) & truncated_lower & truncated_upper),
+      aes(x = CI_lower_plot, xend = CI_upper_plot, yend = y_pos),
+      linewidth = 0.7, color = "darkblue"
+    ) +
+    
+    # 왼쪽 화살표 (CI lower < lower_bound)
+    geom_point(
+      data = plot_data %>% filter(truncated_lower),
+      aes(x = CI_lower_plot),
+      shape = 17, size = 2.5, color = "darkblue"  # 왼쪽 pointing triangle
+    ) +
+    
+    # 오른쪽 화살표 (CI upper > upper_bound)
+    geom_point(
+      data = plot_data %>% filter(truncated_upper),
+      aes(x = CI_upper_plot),
+      shape = 17, size = 2.5, color = "darkblue", 
+      position = position_nudge(x = 0)  # 오른쪽 pointing triangle
     ) +
     
     # Points - Overall (diamond)
@@ -162,10 +215,14 @@ create_forest_plot <- function(data,
       hjust = 0, size = 3
     ) +
     
-    # P interaction
+    # P interaction 헤더
+    annotate("text", x = x_limits[2] * 1.55, y = n_rows + 0.8,
+             label = "P int.", hjust = 0, size = 3, fontface = "bold") +
+    
+    # P interaction 값
     geom_text(
       aes(x = x_limits[2] * 1.55, label = p_int_text),
-      hjust = 0, size = 2.8, color = "gray40", fontface = "italic"
+      hjust = 0, size = 2.8, color = "gray30"
     ) +
     
     # Scales
@@ -180,13 +237,13 @@ create_forest_plot <- function(data,
     scale_color_identity() +
     
     # Favors 라벨
-    annotate("text", x = 0.6, y = 0, label = "Favors\nBP-DES", 
-             size = 2.8, fontface = "italic", color = "gray50", lineheight = 0.9) +
-    annotate("text", x = 1.7, y = 0, label = "Favors\nDP-DES", 
-             size = 2.8, fontface = "italic", color = "gray50", lineheight = 0.9) +
+    annotate("text", x = 0.55, y = 0, label = "Favors BP-DES", 
+             size = 2.8, fontface = "italic", color = "gray50") +
+    annotate("text", x = 1.8, y = 0, label = "Favors DP-DES", 
+             size = 2.8, fontface = "italic", color = "gray50") +
     
     # X축 라벨
-    labs(x = "Hazard Ratio (BP-DES vs DP-DES)") +
+    labs(x = "Hazard Ratio (95% CI)") +
     
     # Theme
     theme_minimal(base_size = 11) +
@@ -229,29 +286,27 @@ create_forest_plot <- function(data,
 forest_data_tlf <- convert_to_forest_format(subgroup_results_tlf)
 
 # 2. 결과 확인
+cat("\n=== Forest Plot Data ===\n")
 print(forest_data_tlf)
 
-# 3. Forest plot 생성
+# 3. Truncation 확인
+cat("\n=== CI Truncation Check (x_limits = 0.4, 2.2) ===\n")
+forest_data_tlf %>%
+  filter(!is.na(CI_lower)) %>%
+  mutate(
+    truncated_lower = CI_lower < 0.4,
+    truncated_upper = CI_upper > 2.2
+  ) %>%
+  filter(truncated_lower | truncated_upper) %>%
+  select(Subgroup, Category, HR, CI_lower, CI_upper, truncated_lower, truncated_upper) %>%
+  print()
+
+# 4. Forest plot 생성
 forest_tlf <- create_forest_plot(
   data = forest_data_tlf,
   x_breaks = c(0.5, 0.75, 1.0, 1.5, 2.0),
-  x_limits = c(0.4, 2.2),
+  x_limits = c(0.5, 2.2),
   filename = "Figure_Subgroup_TLF_5years"
 )
 
 print(forest_tlf)
-
-################################################################################
-# MI at 1 Year도 동일하게 처리
-################################################################################
-
-# forest_data_mi <- convert_to_forest_format(subgroup_results_mi)
-# 
-# forest_mi <- create_forest_plot(
-#   data = forest_data_mi,
-#   x_breaks = c(0.5, 0.75, 1.0, 1.5, 2.0),
-#   x_limits = c(0.3, 2.5),
-#   filename = "Figure_Subgroup_MI"
-# )
-# 
-# print(forest_mi)

@@ -1,5 +1,5 @@
 ################################################################################
-# Subgroup Analysis - TLF at 5 Years Only (Error Fixed)
+# Subgroup Analysis - TLF at 5 Years (Study Period 제외)
 ################################################################################
 
 library(survival)
@@ -10,8 +10,30 @@ library(aod)
 # 1. Prepare Data with Subgroup Variables
 ################################################################################
 
+# fu_days_correct 생성 (없으면)
+if (!"fu_days_correct" %in% names(matched_data)) {
+  matched_data <- matched_data %>%
+    mutate(fu_days_correct = as.numeric(last_fu_date - CAG_date))
+}
+
+# time_to_composite 수정
 matched_data <- matched_data %>%
   mutate(
+    time_to_composite = case_when(
+      composite_event == 1 ~ as.numeric(composite_date - CAG_date),
+      TRUE ~ fu_days_correct
+    ),
+    time_to_composite = pmin(time_to_composite, 1825),  # 5년 cap
+    time_to_composite = if_else(is.na(time_to_composite) | time_to_composite <= 0, 0.1, time_to_composite),
+    composite_event = as.numeric(as.character(composite_event))
+  )
+
+# Subgroup 변수 생성
+matched_data <- matched_data %>%
+  mutate(
+    # BP를 factor로 변환 (interaction term 이름 일관성)
+    BP_factor = factor(BP, levels = c(0, 1), labels = c("DP", "BP")),
+    
     # Age groups
     age_group = if_else(age < 65, "<65 years", ">=65 years"),
     age_group = factor(age_group, levels = c("<65 years", ">=65 years")),
@@ -32,7 +54,7 @@ matched_data <- matched_data %>%
     presentation_group = if_else(is_ACS == 1, "ACS", "Stable CAD"),
     presentation_group = factor(presentation_group, levels = c("Stable CAD", "ACS")),
     
-    # Number of Diseased Vessels - factor를 numeric으로 변환 후 처리
+    # Number of Diseased Vessels
     num_CAOD_numeric = as.numeric(as.character(num_CAOD)),
     vessel_group = case_when(
       num_CAOD_numeric == 1 ~ "1 vessel",
@@ -46,9 +68,13 @@ matched_data <- matched_data %>%
     bifurcation_group = if_else(is_bifurcation == 1 | is_bifurcation == "Yes", "Yes", "No"),
     bifurcation_group = factor(bifurcation_group, levels = c("No", "Yes")),
     
-    # Study Period (era)
-    era_group = factor(era, levels = c("2010-2013", "2014-2016", "2017-2021"))
+    # LM Disease
+    lm_group = if_else(is_LM == 1 | is_LM == "Yes" | is_LM == TRUE, "Yes", "No"),
+    lm_group = factor(lm_group, levels = c("No", "Yes"))
   )
+
+# BP도 numeric으로 확인
+matched_data$BP <- as.numeric(as.character(matched_data$BP))
 
 # Verify distributions
 cat("\n=== Subgroup Distributions ===\n")
@@ -59,11 +85,11 @@ cat("\nChronic Kidney Disease:\n"); print(table(matched_data$ckd_group, matched_
 cat("\nClinical Presentation:\n"); print(table(matched_data$presentation_group, matched_data$BP))
 cat("\nNumber of Diseased Vessels:\n"); print(table(matched_data$vessel_group, matched_data$BP, useNA = "ifany"))
 cat("\nBifurcation Lesion:\n"); print(table(matched_data$bifurcation_group, matched_data$BP))
-cat("\nStudy Period:\n"); print(table(matched_data$era_group, matched_data$BP))
+cat("\nLM Disease:\n"); print(table(matched_data$lm_group, matched_data$BP, useNA = "ifany"))
 
 
 ################################################################################
-# 2. Subgroup Analysis Function (Fixed)
+# 2. Subgroup Analysis Function (P_interaction FIXED)
 ################################################################################
 
 perform_subgroup_analysis <- function(data, 
@@ -138,33 +164,53 @@ perform_subgroup_analysis <- function(data,
   results_df <- do.call(rbind, results)
   rownames(results_df) <- NULL
   
-  # Test for interaction (실제 존재하는 레벨이 2개 이상일 때만)
+  #############################################################################
+  # P_interaction 계산
+  #############################################################################
   p_interaction <- NA
   
   if (length(subgroup_levels) >= 2 && nrow(results_df) >= 2) {
+    
+    # Interaction model
     interaction_formula <- paste0("Surv(", time_var, ", ", event_var, ") ~ BP * ", subgroup_var)
     
     cox_interaction <- tryCatch({
       coxph(as.formula(interaction_formula), data = data_clean, cluster = subclass)
-    }, error = function(e) NULL)
+    }, error = function(e) {
+      cat("Warning: Interaction model failed for", subgroup_name, "\n")
+      return(NULL)
+    })
     
     if (!is.null(cox_interaction)) {
-      interaction_term <- grep("^BP1:", names(coef(cox_interaction)), value = TRUE)
+      # coefficient 이름 확인
+      coef_names <- names(coef(cox_interaction))
+      cat("  Interaction terms for", subgroup_name, ":", 
+          paste(coef_names[grepl("BP.*:|:.*BP", coef_names)], collapse = ", "), "\n")
       
-      if (length(interaction_term) > 0) {
-        if (length(interaction_term) > 1) {
+      # interaction term 찾기 (BP: 또는 :BP 패턴)
+      interaction_terms <- grep("BP.*:|:.*BP", coef_names, value = TRUE)
+      
+      if (length(interaction_terms) > 0) {
+        if (length(interaction_terms) > 1) {
           # Multiple levels - Wald test
-          interaction_positions <- grep("^BP1:", names(coef(cox_interaction)))
+          interaction_positions <- grep("BP.*:|:.*BP", coef_names)
+          
           wald <- tryCatch({
-            wald.test(Sigma = vcov(cox_interaction), b = coef(cox_interaction), Terms = interaction_positions)
-          }, error = function(e) NULL)
+            wald.test(Sigma = vcov(cox_interaction), 
+                      b = coef(cox_interaction), 
+                      Terms = interaction_positions)
+          }, error = function(e) {
+            cat("    Wald test failed\n")
+            return(NULL)
+          })
           
           if (!is.null(wald)) {
             p_interaction <- wald$result$chi2["P"]
           }
         } else {
+          # Single interaction term
           p_interaction <- tryCatch({
-            summary(cox_interaction)$coefficients[interaction_term, "Pr(>|z|)"]
+            summary(cox_interaction)$coefficients[interaction_terms, "Pr(>|z|)"]
           }, error = function(e) NA)
         }
       }
@@ -178,7 +224,7 @@ perform_subgroup_analysis <- function(data,
 
 
 ################################################################################
-# 3. Run Subgroup Analysis - TLF at 5 Years
+# 3. Run Subgroup Analysis - TLF at 5 Years (Study Period 제외)
 ################################################################################
 
 cat("\n\n=== Running Subgroup Analysis: TLF at 5 Years ===\n")
@@ -186,28 +232,36 @@ cat("\n\n=== Running Subgroup Analysis: TLF at 5 Years ===\n")
 subgroup_list <- list()
 
 # Age
+cat("\n--- Age ---\n")
 subgroup_list$age <- perform_subgroup_analysis(matched_data, "age_group", "Age")
 
 # Sex  
+cat("\n--- Sex ---\n")
 subgroup_list$sex <- perform_subgroup_analysis(matched_data, "sex_group", "Sex")
 
 # Diabetes Mellitus
+cat("\n--- Diabetes Mellitus ---\n")
 subgroup_list$dm <- perform_subgroup_analysis(matched_data, "dm_group", "Diabetes Mellitus")
 
 # Chronic Kidney Disease
+cat("\n--- Chronic Kidney Disease ---\n")
 subgroup_list$ckd <- perform_subgroup_analysis(matched_data, "ckd_group", "Chronic Kidney Disease")
 
 # Clinical Presentation
+cat("\n--- Clinical Presentation ---\n")
 subgroup_list$presentation <- perform_subgroup_analysis(matched_data, "presentation_group", "Clinical Presentation")
 
 # Number of Diseased Vessels
+cat("\n--- Number of Diseased Vessels ---\n")
 subgroup_list$vessel <- perform_subgroup_analysis(matched_data, "vessel_group", "Number of Diseased Vessels")
 
 # Bifurcation Lesion
+cat("\n--- Bifurcation Lesion ---\n")
 subgroup_list$bifurcation <- perform_subgroup_analysis(matched_data, "bifurcation_group", "Bifurcation Lesion")
 
-# Study Period
-subgroup_list$era <- perform_subgroup_analysis(matched_data, "era_group", "Study Period")
+# LM Disease
+cat("\n--- LM Disease ---\n")
+subgroup_list$lm <- perform_subgroup_analysis(matched_data, "lm_group", "LM Disease")
 
 # Combine all results
 subgroup_results_tlf <- do.call(rbind, subgroup_list)
@@ -255,13 +309,13 @@ print(subgroup_results_tlf)
 format_subgroup_table <- function(data) {
   data %>%
     mutate(
-      `BP-DES` = sprintf("%d/%d (%.1f%%)", Events_BP, N_BP, Events_BP/N_BP*100),
       `DP-DES` = sprintf("%d/%d (%.1f%%)", Events_DP, N_DP, Events_DP/N_DP*100),
+      `BP-DES` = sprintf("%d/%d (%.1f%%)", Events_BP, N_BP, Events_BP/N_BP*100),
       `HR (95% CI)` = sprintf("%.2f (%.2f-%.2f)", HR, CI_lower, CI_upper),
       `P Value` = sprintf("%.3f", P_value),
       `P for Interaction` = if_else(!is.na(P_interaction), sprintf("%.3f", P_interaction), "—")
     ) %>%
-    select(Subgroup, Category, `BP-DES`, `DP-DES`, `HR (95% CI)`, `P Value`, `P for Interaction`)
+    select(Subgroup, Category, `DP-DES`, `BP-DES`, `HR (95% CI)`, `P Value`, `P for Interaction`)
 }
 
 table_subgroup_tlf <- format_subgroup_table(subgroup_results_tlf)
@@ -302,69 +356,43 @@ cat(rep("=", 70), "\n")
 
 
 ################################################################################
-# 6. Forest Plot 데이터 변환 함수
+# 6. Forest Plot
 ################################################################################
 
-convert_to_forest_format <- function(subgroup_results) {
-  
-  forest_data <- data.frame()
-  
-  # Overall 추가
-  overall_row <- subgroup_results %>% filter(Category == "All Patients")
-  
-  if (nrow(overall_row) > 0) {
-    forest_data <- rbind(forest_data, data.frame(
-      Subgroup = "Overall",
-      Category = "All Patients",
-      HR = overall_row$HR,
-      CI_lower = overall_row$CI_lower,
-      CI_upper = overall_row$CI_upper,
-      P_value = overall_row$P_value,
-      P_interaction = NA,
-      stringsAsFactors = FALSE
-    ))
-  }
-  
-  # 각 Subgroup 처리
-  subgroups <- unique(subgroup_results$Subgroup[subgroup_results$Subgroup != "Overall"])
-  
-  for (sg in subgroups) {
-    sg_data <- subgroup_results %>% filter(Subgroup == sg)
-    p_int <- sg_data$P_interaction[1]
-    
-    # Header 행
-    forest_data <- rbind(forest_data, data.frame(
-      Subgroup = sg,
-      Category = sg,
-      HR = NA,
-      CI_lower = NA,
-      CI_upper = NA,
-      P_value = NA,
-      P_interaction = p_int,
-      stringsAsFactors = FALSE
-    ))
-    
-    # Category 행들
-    for (i in 1:nrow(sg_data)) {
-      forest_data <- rbind(forest_data, data.frame(
-        Subgroup = sg,
-        Category = sg_data$Category[i],
-        HR = sg_data$HR[i],
-        CI_lower = sg_data$CI_lower[i],
-        CI_upper = sg_data$CI_upper[i],
-        P_value = sg_data$P_value[i],
-        P_interaction = NA,
-        stringsAsFactors = FALSE
-      ))
-    }
-  }
-  
-  rownames(forest_data) <- NULL
-  return(forest_data)
-}
+library(ggplot2)
 
-# Forest plot 형식으로 변환
-forest_data_tlf <- convert_to_forest_format(subgroup_results_tlf)
+# Forest plot 데이터 준비
+forest_data <- subgroup_results_tlf %>%
+  mutate(
+    label = paste0(Subgroup, ": ", Category),
+    label = if_else(Category == "All Patients", "Overall", label),
+    y_pos = rev(row_number())
+  )
 
-cat("\n=== Forest Plot Data ===\n")
-print(forest_data_tlf)
+# Forest plot 생성
+p_forest <- ggplot(forest_data, aes(x = HR, y = reorder(label, y_pos))) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), height = 0.2) +
+  geom_point(size = 3, shape = 18) +
+  scale_x_log10(limits = c(0.3, 3), breaks = c(0.5, 1, 2)) +
+  labs(
+    title = "Subgroup Analysis: BP-DES vs DP-DES for TLF at 5 Years",
+    x = "Hazard Ratio (95% CI)",
+    y = "",
+    caption = "HR > 1 favors DP-DES"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 9)
+  )
+
+print(p_forest)
+
+ggsave("Figure_Subgroup_Forest_TLF.png", p_forest, width = 10, height = 8, dpi = 300)
+cat("\nSaved: Figure_Subgroup_Forest_TLF.png\n")
+
+
+cat("\n", rep("=", 70), "\n")
+cat("SUBGROUP ANALYSIS COMPLETE\n")
+cat(rep("=", 70), "\n")
